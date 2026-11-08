@@ -1,0 +1,5 @@
+* -text
+*.anim filter=lfs diff=lfs merge=lfs -text
+*.cs text eol=lf
+*.json text eol=lf
+*.yml text eol=lf

@@ -1,0 +1,9 @@
+{
+  "name": "Zincat.Switches",
+  "rootNamespace": "Zincat.Switches",
+  "references": [
+    "nadena.dev.ndmf.runtime"
+  ],
+  "includePlatforms": [],
+  "autoReferenced": true
+}

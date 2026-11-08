@@ -1,0 +1,29 @@
+name: Publish VPM release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build package and validate listing
+        run: |
+          python tools/build_release.py
+          git diff --exit-code -- docs/index.json
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(python -c "import json; print(json.load(open('Packages/io.github.sgzincanya.zincat/package.json'))['version'])")
+          TAG="v$VERSION"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$TAG" ]; then exit 1; fi
+          gh release create "$TAG" dist/*.zip --verify-tag --title "Zincat $VERSION" --notes "VPM package for VCC / ALCOM. User caches and personal settings are excluded."

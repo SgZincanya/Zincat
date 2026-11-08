@@ -1,0 +1,6 @@
+{
+  "name": "Zincat.StarmeshMatcher.Launcher.Editor",
+  "references": [],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true
+}

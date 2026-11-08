@@ -1,0 +1,42 @@
+{
+  "name": "Zincat.Lighting.Editor",
+  "rootNamespace": "Zincat.Lighting.Editor",
+  "references": [
+    "Zincat.Lighting.Prefab",
+    "nadena.dev.ndmf",
+    "nadena.dev.ndmf.runtime",
+    "nadena.dev.modular-avatar.core",
+    "VRC.SDK3A",
+    "VRC.SDKBase"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "autoReferenced": true,
+  "defineConstraints": [
+    "ZINCAT_NDMF",
+    "ZINCAT_MA",
+    "ZINCAT_VRC"
+  ],
+  "versionDefines": [
+    {
+      "name": "nadena.dev.ndmf",
+      "expression": "1.14.0",
+      "define": "ZINCAT_NDMF"
+    },
+    {
+      "name": "nadena.dev.modular-avatar",
+      "expression": "1.18.0",
+      "define": "ZINCAT_MA"
+    },
+    {
+      "name": "com.vrchat.avatars",
+      "expression": "3.0.0",
+      "define": "ZINCAT_VRC"
+    }
+  ],
+  "noEngineReferences": false
+}

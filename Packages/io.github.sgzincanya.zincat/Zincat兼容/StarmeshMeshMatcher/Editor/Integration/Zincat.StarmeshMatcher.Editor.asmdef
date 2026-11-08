@@ -1,0 +1,11 @@
+{
+  "name": "Zincat.StarmeshMatcher.Editor",
+  "references": ["Starmesh.Runtime", "Starmesh.Editor", "HaiMeshLib.Editor"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true,
+  "defineConstraints": ["ZINCAT_STARMESH_PACKAGE", "ZINCAT_HAIMESHLIB_PACKAGE"],
+  "versionDefines": [
+    {"name": "dev.hai-vr.starmesh", "expression": "[1.7.0,2.0.0)", "define": "ZINCAT_STARMESH_PACKAGE"},
+    {"name": "dev.hai-vr.haimeshlib", "expression": "[1.6.0,2.0.0)", "define": "ZINCAT_HAIMESHLIB_PACKAGE"}
+  ]
+}

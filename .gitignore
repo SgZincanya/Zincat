@@ -1,0 +1,12 @@
+dist/
+__pycache__/
+*.pyc
+.DS_Store
+Library/
+Temp/
+Logs/
+UserSettings/
+**/Clothing2.0/Cache/
+**/Clothing2.0/Cache.meta
+**/UploadSettings/
+**/UploadSettings.meta

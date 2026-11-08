@@ -1,0 +1,7 @@
+{
+    "name": "Zincat.AvatarSplit.Components",
+    "references": ["nadena.dev.ndmf.runtime"],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "autoReferenced": true
+}

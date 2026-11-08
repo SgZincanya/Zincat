@@ -1,0 +1,7 @@
+{
+    "name": "Zincat.Clothing.Components",
+    "references": ["nadena.dev.ndmf.runtime", "VRC.SDK3A"],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "autoReferenced": true
+}
