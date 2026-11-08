@@ -30,7 +30,7 @@ namespace Zincat.Clothing.Editor
         private const string GeneratedPrefix = "MA衣柜_";
         private const int MainCount = 12;
         private const int TotalCount = 21;
-        private const int CardSize = 154;
+        private const int CardSize = 200;
         private static Color WindowColor => EditorGUIUtility.isProSkin ? new Color32(52, 52, 52, 255) : new Color(.95f, .95f, .96f);
         private static Color CardColor => EditorGUIUtility.isProSkin ? new Color32(58, 58, 58, 255) : Color.white;
         private static Color SelectedColor => EditorGUIUtility.isProSkin ? new Color(.17f, .23f, .31f) : new Color(.91f, .95f, 1f);
@@ -1042,9 +1042,10 @@ namespace Zincat.Clothing.Editor
             var slot = slots[index];
             int count = slot.Targets.Count(target => target != null);
             bool advancedOnly = count == 0 && (slot.UseBlendshapes || slot.UseMaterials);
-            var card = new VisualElement();
+            var card = new VisualElement { name = "part-card-" + slot.Key };
             card.style.width = CardSize;
             card.style.height = CardSize;
+            card.style.flexShrink = 0;
             card.style.marginRight = 9;
             card.style.marginBottom = 9;
             card.style.paddingLeft = 11;
@@ -1057,18 +1058,38 @@ namespace Zincat.Clothing.Editor
             var cardHeading = new VisualElement();
             cardHeading.style.flexDirection = FlexDirection.Row;
             cardHeading.style.alignItems = Align.FlexStart;
-            var category = new Label(PartDisplayName(slot.Category) + (slot.Backup ? " · 备用" : ""));
+            cardHeading.style.minHeight = 38;
+            cardHeading.style.flexShrink = 0;
+            var thumbnail = new Image { image = slot.Icon, scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
+            thumbnail.style.width = 24; thumbnail.style.height = 24; thumbnail.style.flexShrink = 0;
+            thumbnail.style.marginRight = 6;
+            cardHeading.Add(thumbnail);
+            var headingText = new VisualElement();
+            headingText.style.flexGrow = 1;
+            headingText.style.flexShrink = 1;
+            headingText.style.minWidth = 0;
+            var category = new Label(PartDisplayName(slot.Category)) { tooltip = PartDisplayName(slot.Category), name = "part-category-" + slot.Key };
             category.style.fontSize = 15;
             category.style.unityFontStyleAndWeight = FontStyle.Normal;
-            category.style.whiteSpace = WhiteSpace.Normal;
-            category.style.flexGrow = 1;
-            cardHeading.Add(category);
-            if (slot.Icon != null)
+            category.style.whiteSpace = WhiteSpace.NoWrap;
+            category.style.overflow = Overflow.Hidden;
+            category.style.textOverflow = TextOverflow.Ellipsis;
+            category.style.minWidth = 0;
+            headingText.Add(category);
+            if (slot.Backup)
             {
-                var thumbnail = new Image { image = slot.Icon, scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
-                thumbnail.style.width = 24; thumbnail.style.height = 24; thumbnail.style.flexShrink = 0;
-                cardHeading.Insert(0, thumbnail);
+                var badge = new Label("备用") { name = "part-backup-badge" };
+                badge.style.fontSize = 10;
+                badge.style.color = MutedColor;
+                badge.style.alignSelf = Align.FlexStart;
+                badge.style.marginTop = 2;
+                badge.style.paddingLeft = badge.style.paddingRight = 4;
+                badge.style.backgroundColor = new Color(.5f,.5f,.5f,.15f);
+                badge.style.borderTopLeftRadius = badge.style.borderTopRightRadius = 3;
+                badge.style.borderBottomLeftRadius = badge.style.borderBottomRightRadius = 3;
+                headingText.Add(badge);
             }
+            cardHeading.Add(headingText);
             var previewButton = new Button(() => TogglePreview(index));
             previewButton.name = "part-preview-" + slot.Key;
             previewButton.AddToClassList("wardrobe-state-button");
@@ -1078,6 +1099,8 @@ namespace Zincat.Clothing.Editor
             previewButton.style.width = 20;
             previewButton.style.height = 20;
             previewButton.style.minWidth = 20;
+            previewButton.style.flexShrink = 0;
+            previewButton.style.marginRight = 0;
             previewButton.style.marginLeft = 3;
             previewButton.style.paddingLeft = 0;
             previewButton.style.paddingRight = 0;
@@ -1104,6 +1127,9 @@ namespace Zincat.Clothing.Editor
             menuNameField.name = "part-menu-name-" + slot.Key;
             menuNameField.tooltip = "直接修改此分件在菜单中的名称，生成或更新菜单后生效。";
             menuNameField.style.marginTop = 2;
+            menuNameField.style.marginLeft = menuNameField.style.marginRight = 0;
+            menuNameField.style.flexShrink = 0;
+            menuNameField.style.minWidth = 0;
             menuNameField.RegisterValueChangedCallback(evt =>
             {
                 Undo.RecordObject(this, "修改分件菜单名称");
@@ -1118,22 +1144,20 @@ namespace Zincat.Clothing.Editor
             });
             // 输入框点击不能触发整张卡片重建，否则输入焦点会丢失。
             menuNameField.RegisterCallback<ClickEvent>(evt => evt.StopPropagation());
-            var nameRow = new VisualElement();
-            nameRow.style.flexDirection = FlexDirection.Row;
-            menuNameField.style.flexGrow = 1;
-            menuNameField.style.minWidth = 0;
-            nameRow.Add(menuNameField);
+            card.Add(menuNameField);
             var vocabulary = new Button(() =>
             {
                 selectedIndex = index;
                 RefreshAll();
                 OpenSelectedVocabulary();
             }) { text = "词库", name = "part-vocabulary-" + slot.Key, tooltip = "从词库选择菜单名称" };
-            vocabulary.style.width = 48;
-            vocabulary.style.marginLeft = 3;
+            vocabulary.style.width = 54;
+            vocabulary.style.alignSelf = Align.FlexStart;
+            vocabulary.style.flexShrink = 0;
+            vocabulary.style.marginLeft = 0;
+            vocabulary.style.marginTop = 4;
             vocabulary.RegisterCallback<ClickEvent>(evt => evt.StopPropagation());
-            nameRow.Add(vocabulary);
-            card.Add(nameRow);
+            card.Add(vocabulary);
 
             var counter = new Label(count == 0 ? (advancedOnly ? "仅高级效果" : "拖入分件") : count + " 个物体");
             if (!string.IsNullOrEmpty(slot.ExternalReadOnlyReason))
@@ -1142,6 +1166,10 @@ namespace Zincat.Clothing.Editor
                 counter.tooltip = slot.ExternalReadOnlyReason;
             }
             counter.style.marginTop = 5;
+            counter.style.whiteSpace = WhiteSpace.NoWrap;
+            counter.style.overflow = Overflow.Hidden;
+            counter.style.textOverflow = TextOverflow.Ellipsis;
+            counter.style.flexShrink = 0;
             counter.style.color = count == 0 && !advancedOnly ? MutedColor : WardrobeUiStyle.Link;
             card.Add(counter);
 
@@ -1153,6 +1181,9 @@ namespace Zincat.Clothing.Editor
             preview.style.whiteSpace = WhiteSpace.Normal;
             preview.style.color = MutedColor;
             preview.style.fontSize = 11;
+            preview.style.maxHeight = 28;
+            preview.style.overflow = Overflow.Hidden;
+            preview.tooltip = string.Join("\n", slot.Targets.Where(target => target != null).Select(target => target.name));
             card.Add(preview);
 
             card.RegisterCallback<ClickEvent>(evt =>

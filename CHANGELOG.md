@@ -1,5 +1,12 @@
 # Changes
 
+## 2.11.2
+
+- Increase wardrobe part cards to 200 px and prevent cards and controls from shrinking.
+- Refine thumbnail and category layout, separate the backup badge, and move the vocabulary button below the name field.
+- Truncate long labels and preview text while preserving full names in tooltips.
+- Keep existing menu icons, caches and personal settings unchanged.
+
 ## 2.11.1
 
 - Restore the newer MA menu photo workflow and its preview renderer interface.
