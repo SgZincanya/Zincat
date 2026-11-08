@@ -9,6 +9,14 @@ dist=root/'dist';dist.mkdir(exist_ok=True)
 archive=dist/(name+'-'+version+'.zip')
 files=sorted((p for p in package.rglob('*') if p.is_file()),key=lambda p:p.relative_to(package).as_posix())
 assert not any('/UploadSettings/' in p.as_posix() or '/Clothing2.0/Cache/' in p.as_posix() for p in files)
+assert not manifest.get('legacyFolders'), 'Never migrate whole folders containing user data'
+for p in files:
+ if p.suffix=='.cs':
+  legacy='Assets/Zincat/'+p.relative_to(package).as_posix()
+  assert legacy in manifest.get('legacyFiles',{}), 'Missing script migration: '+legacy
+  guid=re.search(r'^guid: (\w+)',Path(str(p)+'.meta').read_text(),re.M)[1]
+  assert manifest['legacyFiles'][legacy]==guid, 'Migration GUID mismatch: '+legacy
+assert not any('/Cache/' in p or '/UploadSettings/' in p for p in manifest['legacyFiles'])
 with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as z:
  for p in files:
   data=p.read_bytes()

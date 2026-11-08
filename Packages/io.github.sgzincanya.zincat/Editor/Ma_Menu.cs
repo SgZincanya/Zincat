@@ -16,6 +16,8 @@ using VRC.SDK3.Avatars.Components;
 public class IntegrateMovementTool : EditorWindow
 {
     [SerializeField] bool intMode;
+    [SerializeField] bool expandedDefaultRestored;
+    [SerializeField] string activeGroupKey;
     [SerializeField] List<ZincatMaEntry> switches = new List<ZincatMaEntry>();
     [SerializeField] List<ZincatMaGroup> groups = new List<ZincatMaGroup>();
     [SerializeField] Vector2 switchScroll, groupScroll;
@@ -26,6 +28,11 @@ public class IntegrateMovementTool : EditorWindow
     Button generate, addSelection;
     Label status;
     HelpBox feedback;
+    Button reloadSource;
+    DropdownField groupPicker;
+    readonly Dictionary<ZincatMaEntry, Action> cardUpdates = new Dictionary<ZincatMaEntry, Action>();
+    readonly Dictionary<ZincatMaGroup, Label> groupSummaries = new Dictionary<ZincatMaGroup, Label>();
+    ZincatMaGroup ActiveGroup => groups.FirstOrDefault(g => g.AutoParameter == activeGroupKey) ?? groups.LastOrDefault();
     bool dark, scrollRestorePending;
     IVisualElementScheduledItem scrollRestoreTask;
     readonly Dictionary<ZincatMaEntry, Label> summaries = new Dictionary<ZincatMaEntry, Label>();
@@ -42,6 +49,7 @@ public class IntegrateMovementTool : EditorWindow
     void OnEnable()
     {
         titleContent = new GUIContent("MA 组件生成器"); minSize = new Vector2(440, 440); dark = EditorGUIUtility.isProSkin;
+        if (!expandedDefaultRestored) { foreach (var entry in switches.Concat(groups.SelectMany(g => g.Values))) entry.Expanded = true; expandedDefaultRestored = true; }
         Undo.undoRedoPerformed += OnUndo; EditorApplication.update += OnUpdate; EditorApplication.hierarchyChanged += UpdateFooter;
     }
     void OnDisable()
@@ -83,10 +91,11 @@ public class IntegrateMovementTool : EditorWindow
     void BuildUI()
     {
         if (scroll != null && !scrollRestorePending) offset = scroll.scrollOffset;
-        scrollRestoreTask?.Pause(); scrollRestorePending = true; summaries.Clear(); componentHosts.Clear(); meshViews.Clear(); rowUpdates.Clear();
+        scrollRestoreTask?.Pause(); scrollRestorePending = true; summaries.Clear(); componentHosts.Clear(); meshViews.Clear(); rowUpdates.Clear(); cardUpdates.Clear(); groupSummaries.Clear(); groupPicker = null;
         var root = rootVisualElement; root.Clear(); root.style.flexGrow = 1; root.style.backgroundColor = ZincatQuickMenuStyle.Surface;
         root.style.paddingLeft = root.style.paddingRight = 14; root.style.paddingTop = root.style.paddingBottom = 12;
-        var title = new Label("MA 组件生成器"); title.style.fontSize = 20; title.style.marginBottom = 6; root.Add(title);
+        var titleRow = Row(); var title = new Label("MA 组件生成器"); title.style.fontSize = 20; title.style.marginBottom = 6; Elastic(title); titleRow.Add(title);
+        titleRow.Add(new Button(() => ZincatMaPhotoWindow.OpenSettings(PhotoOptions)) { text = "分件截图设置", tooltip = "预览角度、留白与透明兼容，也可一键拍摄全部选项" }); root.Add(titleRow);
         root.Add(ZincatQuickMenuStyle.Hint("手动配置物品、形态键和材质替换；也可留空生成原生 MA 组件", 10));
         var modes = Row(); modes.style.minHeight = 30; modes.style.flexShrink = 0;
         foreach (bool useInt in new[] { false, true })
@@ -95,21 +104,27 @@ public class IntegrateMovementTool : EditorWindow
             Elastic(button); button.style.marginRight = 4; modes.Add(button);
         }
         root.Add(modes);
-        if (intMode) root.Add(ZincatQuickMenuStyle.Hint("每组共用一个 Int 参数。各选项的值互不相同，默认值为 0。", 0));
+        if (intMode) root.Add(ZincatQuickMenuStyle.Hint("同组共用一个参数；新增选项自动使用空闲 Int 值。", 0));
         if (intMode)
         {
             var read = new ObjectField("读取 Int 菜单") { objectType = typeof(GameObject), allowSceneObjects = true, tooltip = "拖入已生成的 Int 子菜单，读取当前 MA 配置并继续添加对象；兼容的旧菜单也可读取。" };
             read.style.marginTop = 5;
             read.RegisterValueChangedCallback(e => { if (e.newValue is GameObject obj) Perform(() => LoadIntMenu(obj)); }); root.Add(read);
+            if (groups.Count > 1)
+            {
+                groupPicker = new DropdownField("添加到参数组", groups.Select((g, i) => (i + 1) + ". " + g.Name).ToList(), groups.IndexOf(ActiveGroup));
+                groupPicker.RegisterValueChangedCallback(e => { if (groupPicker.index >= 0 && groupPicker.index < groups.Count) activeGroupKey = groups[groupPicker.index].AutoParameter; UpdateFooter(); }); root.Add(groupPicker);
+            }
         }
         var tools = Row(); tools.style.marginTop = 8; tools.style.minHeight = 30; tools.style.flexShrink = 0;
-        addSelection = new Button(() => Perform(() => AddObjects(Selection.gameObjects))) { text = "添加选中物件", tooltip = "按名称创建卡片，并绑定物品开关目标；不修改原物件状态", name = "quick-add-selection" }; Elastic(addSelection); tools.Add(addSelection);
+        addSelection = new Button(() => Perform(() => AddObjects(Selection.gameObjects, intMode ? ActiveGroup : null))) { text = "添加选中物件", tooltip = "按名称创建卡片，并绑定物品开关目标；不修改原物件状态", name = "quick-add-selection" }; Elastic(addSelection); tools.Add(addSelection);
         var create = new Button(() => Perform(() =>
         {
             Remember("新建开关");
-            if (intMode) { var group = new ZincatMaGroup(); group.Values.Add(new ZincatMaEntry { Name = "选项 1" }); groups.Add(group); }
+            if (intMode) { var group = NewGroup(); group.Values.Add(new ZincatMaEntry { Name = "选项 1" }); }
             else switches.Add(new ZincatMaEntry());
         })) { text = intMode ? "＋ 参数组" : "＋ 新建开关" }; create.style.marginLeft = 6; tools.Add(create);
+        tools.Add(new Button(() => Perform(() => { result = ZincatMaPhotoWindow.CaptureAll(PhotoOptions()); resultError = false; })) { text = "一键全拍", tooltip = "当前模式全部选项逐项拍摄并回填，空来源跳过" });
         var more = new Button(More) { text = "⋯", tooltip = "从直接子级添加、展开、折叠、合并、清空" }; more.style.width = 28; more.style.marginLeft = 6; tools.Add(more); root.Add(tools);
         scroll = new ScrollView(ScrollViewMode.Vertical) { horizontalScrollerVisibility = ScrollerVisibility.Hidden, name = "quick-scroll" };
         scroll.style.flexGrow = 1; scroll.style.flexShrink = 1; scroll.style.flexBasis = 0; scroll.style.minHeight = 0; scroll.style.minWidth = 0; scroll.style.marginTop = 10;
@@ -132,6 +147,7 @@ public class IntegrateMovementTool : EditorWindow
             else AddObjects(objects);
         }); grid.Add(drop); scroll.Add(grid);
         feedback = new HelpBox("", HelpBoxMessageType.Info); feedback.style.marginTop = 6; root.Add(feedback);
+        reloadSource = new Button(() => Perform(() => { var group = ActiveGroup; if (group?.SourceMenu != null) LoadIntMenu(group.SourceMenu, true); })) { text = "重新读取当前菜单", tooltip = "用原生 MA 配置替换该组草稿；Ctrl+Z 可恢复草稿" }; root.Add(reloadSource);
         status = ZincatQuickMenuStyle.Hint("", 8); status.style.marginTop = 8; root.Add(status);
         generate = new Button(() => Perform(Generate)) { text = "生成 MA 组件与参数", name = "quick-primary-action" }; generate.style.height = 34; root.Add(generate);
         // Header, toolbar and footer keep their natural heights. Only the scroll viewport
@@ -142,47 +158,204 @@ public class IntegrateMovementTool : EditorWindow
     VisualElement GroupUI(ZincatMaGroup group)
     {
         var box = new VisualElement(); CardStyle(box); box.style.flexBasis = 420;
+        box.RegisterCallback<PointerDownEvent>(_ => { activeGroupKey = group.AutoParameter; UpdateFooter(); });
         var header = Row(); var name = new TextField { value = group.Name, tooltip = "Int 子菜单名称" }; Elastic(name);
         name.RegisterValueChangedCallback(e => { Remember("修改子菜单名称"); group.Name = e.newValue; UpdateFooter(); }); header.Add(name);
-        var remove = new Button(() => Perform(() => { Remember("移除参数组"); groups.Remove(group); })) { text = "×", tooltip = "移除这个参数组" }; remove.style.width = 28; header.Add(remove); box.Add(header);
-        var parameter = new TextField("参数名") { value = group.Parameter, tooltip = "留空时生成唯一参数名；组内所有选项共用此参数" };
-        parameter.RegisterValueChangedCallback(e => { Remember("修改 Int 参数名"); group.Parameter = e.newValue; UpdateFooter(); }); box.Add(parameter);
+        var remove = new Button(() => Perform(() => { Remember("移除参数组"); groups.Remove(group); })) { text = "×", tooltip = "从草稿移除此组，保留场景中的菜单" }; remove.style.width = 28; header.Add(remove); box.Add(header);
+        var summary = ZincatQuickMenuStyle.Hint("", 4); box.Add(summary); groupSummaries[group] = summary;
+        var settings = new Foldout { text = "参数与菜单来源", value = group.SettingsExpanded }; settings.style.marginTop = 4;
+        settings.RegisterValueChangedCallback(e => { if (e.target == settings) group.SettingsExpanded = e.newValue; }); box.Add(settings);
+        var parameter = new TextField("共享参数") { value = group.Parameter, tooltip = "留空使用自动生成的唯一参数名；同组各选项共用此参数" };
+        parameter.RegisterValueChangedCallback(e => { Remember("修改 Int 参数名"); group.Parameter = e.newValue; UpdateFooter(); }); settings.Add(parameter);
         if (group.SourceMenu != null)
         {
-            var source = new ObjectField("正在编辑") { objectType = typeof(GameObject), value = group.SourceMenu, allowSceneObjects = true }; source.SetEnabled(false); box.Add(source);
-            box.Add(new Button(() => Perform(() => LoadIntMenu(group.SourceMenu, true))) { text = "重新读取菜单", tooltip = "用当前 MA 配置替换这一组草稿；Ctrl+Z 可恢复旧草稿" });
+            var source = new ObjectField("原菜单") { objectType = typeof(GameObject), value = group.SourceMenu, allowSceneObjects = true }; source.SetEnabled(false); settings.Add(source);
+            var sourceActions = Row();
+            sourceActions.Add(new Button(() => Perform(() => LoadIntMenu(group.SourceMenu, true))) { text = "重新读取", tooltip = "用原生 MA 当前配置替换这一组草稿，Ctrl+Z 可恢复" });
+            sourceActions.Add(new Button(() => { Selection.activeGameObject = group.SourceMenu; EditorGUIUtility.PingObject(group.SourceMenu); }) { text = "定位原菜单" }); settings.Add(sourceActions);
         }
-        box.Add(new Button(() => Perform(() => AddObjects(Selection.gameObjects, group))) { text = "添加选中物件", tooltip = "按名称添加选项，并绑定物品开关目标" });
+        var tools = Row(); tools.style.marginTop = 8;
+        var selected = new Button(() => Perform(() => AddObjects(Selection.gameObjects, group))) { text = "＋ 选中物件", tooltip = "添加到本组，保留已有选项和 Int 值" }; Elastic(selected); tools.Add(selected);
+        var empty = new Button(() => Perform(() => AddValue(group))) { text = "＋ 空选项", tooltip = "自动使用未占用的 Int 值，组件可自行配置" }; empty.SetEnabled(group.Values.Count < 256); Elastic(empty); tools.Add(empty); box.Add(tools);
+        tools.Add(new Button(() => Perform(() => { foreach (var entry in group.Values) entry.Expanded = false; })) { text = "折叠选项", tooltip = "只收起编辑内容，名称、图标和 Int 值仍可查看" });
         foreach (var entry in group.Values) box.Add(CardUI(entry, group));
-        var add = new Button(() => Perform(() => AddValue(group))) { text = "＋ 添加选项" }; add.SetEnabled(group.Values.Count < 256); box.Add(add);
         RegisterDrop(box, objects => AddObjects(objects, group)); return box;
     }
     VisualElement CardUI(ZincatMaEntry entry, ZincatMaGroup group)
     {
         var box = new VisualElement(); CardStyle(box);
         if (group != null) { box.style.flexBasis = StyleKeyword.Auto; box.style.flexGrow = 0; box.style.marginRight = 0; box.style.marginTop = 8; box.style.width = new Length(100, LengthUnit.Percent); box.style.backgroundColor = ZincatQuickMenuStyle.Surface; }
-        var header = Row(); var name = new TextField { value = entry.Name, tooltip = "菜单里的开关名称" }; Elastic(name);
+        var header = Row(); box.Add(header);
+        var thumbnail = new Image { image = entry.Icon, scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
+        thumbnail.style.width = thumbnail.style.height = 40;
+        var photo = new Button(() => Perform(() => CaptureIcon(entry))) { name = "quick-icon-button", tooltip = "点击直接拍摄或重拍；可拖入图片自动优化，也可拖入场景物件作为特殊截图来源" };
+        thumbnail.style.display = entry.Icon != null ? DisplayStyle.Flex : DisplayStyle.None;
+        photo.style.width = photo.style.height = 46; photo.style.flexShrink = 0; photo.style.marginRight = 6;
+        photo.Add(thumbnail); header.Add(photo);
+        var name = new TextField { value = entry.Name, tooltip = "菜单名称" }; Elastic(name);
         name.RegisterValueChangedCallback(e => { Remember("修改开关名称"); entry.Name = e.newValue; UpdateFooter(); }); header.Add(name);
-        var remove = new Button(() => Perform(() => { Remember("移除开关"); if (group == null) switches.Remove(entry); else group.Values.Remove(entry); })) { text = "×", tooltip = "移除这张卡片" }; remove.style.width = 28; header.Add(remove); box.Add(header);
-        var summary = ZincatQuickMenuStyle.Hint("", 0); summary.style.marginTop = 5; box.Add(summary); summaries[entry] = summary;
-        var details = new Foldout { text = "组件与参数", value = entry.Expanded }; details.style.marginTop = 5;
+        if (group != null)
+        {
+            var value = new IntegerField("值") { value = entry.Value, tooltip = "同组内不能重复，范围 0–255" }; value.style.width = 84; value.style.flexShrink = 0; value.style.marginLeft = 5;
+            value.AddToClassList("quick-inline-value");
+            value.labelElement.style.minWidth = 14; value.labelElement.style.width = 14;
+            value.RegisterValueChangedCallback(e => { Remember("设置 Int 值"); entry.Value = e.newValue; UpdateFooter(); }); header.Add(value);
+        }
+        var remove = new Button(() => Perform(() => { Remember("移除开关"); if (group == null) switches.Remove(entry); else group.Values.Remove(entry); })) { text = "×", tooltip = entry.SourceObject != null ? "移除此选项，写回时删除原菜单项；可撤销" : "移除这张卡片" }; remove.style.width = 28; remove.style.flexShrink = 0; header.Add(remove);
+        var summary = ZincatQuickMenuStyle.Hint("", 0); summary.style.marginTop = 3; box.Add(summary); summaries[entry] = summary;
+        cardUpdates[entry] = () => { thumbnail.image = entry.Icon; thumbnail.style.display = entry.Icon != null ? DisplayStyle.Flex : DisplayStyle.None; photo.text = entry.Icon != null ? "" : entry.IconSource == ZincatMaIconSource.Image ? "放图" : ZincatMaPhotoRenderer.CanCapture(IconTargets(entry)) ? "拍照" : ""; };
+        if (group != null)
+        {
+            var issue = ZincatQuickMenuStyle.Hint("", 0); issue.style.color = EditorGUIUtility.isProSkin ? (Color)new Color32(240, 193, 132, 255) : (Color)new Color32(132, 75, 0, 255); box.Add(issue);
+            cardUpdates[entry] += () => { string text = ZincatMaDraftRules.IntValueIssue(entry.Value, group.Values.Where(e => e != entry).Select(e => e.Value)); issue.text = text ?? ""; issue.style.display = text == null ? DisplayStyle.None : DisplayStyle.Flex; };
+        }
+        var details = new Foldout { text = "编辑配置", value = entry.Expanded }; details.style.marginTop = 3;
         details.RegisterValueChangedCallback(e => { if (e.target == details) entry.Expanded = e.newValue; }); box.Add(details);
         if (group == null)
         {
             var parameter = new TextField("参数名") { value = entry.Parameter, tooltip = "留空时生成唯一 Bool 参数名" };
             parameter.RegisterValueChangedCallback(e => { Remember("修改 Bool 参数名"); entry.Parameter = e.newValue; UpdateFooter(); }); details.Add(parameter);
         }
-        else
-        {
-            var value = new IntegerField("Int 值") { value = entry.Value };
-            value.RegisterValueChangedCallback(e => { Remember("设置 Int 值"); entry.Value = e.newValue; UpdateFooter(); }); details.Add(value);
-        }
         var components = new VisualElement(); details.Add(components); componentHosts[entry] = components; RenderComponents(entry);
-        var icons = new Foldout { text = "菜单图标（可选）", value = entry.IconExpanded };
-        icons.RegisterValueChangedCallback(e => { if (e.target == icons) entry.IconExpanded = e.newValue; });
-        var icon = new ObjectField { objectType = typeof(Texture2D), allowSceneObjects = false, value = entry.Icon };
-        icon.RegisterValueChangedCallback(e => { Remember("设置菜单图标"); entry.Icon = e.newValue as Texture2D; UpdateFooter(); }); icons.Add(icon); details.Add(icons);
+        details.Add(IconSourceUI(entry)); RegisterIconDrop(photo, entry);
         RegisterLocalDrop(box, objects => EditComponent(entry, () => BindObjects(entry, objects))); return box;
+    }
+    GameObject[] IconTargets(ZincatMaEntry entry) => (entry.IconSource == ZincatMaIconSource.SceneObjects ? (IEnumerable<GameObject>)entry.IconTargets : entry.Targets).Where(t => t != null && Editable(t)).Distinct().ToArray();
+    List<ZincatMaPhotoOption> PhotoOptions()
+    {
+        if (this == null) throw new InvalidOperationException("请重新打开 MA 组件生成器。");
+        return Entries().Select(entry => new ZincatMaPhotoOption
+        {
+            Key = entry.AutoParameter, Name = intMode ? groups.First(g => g.Values.Contains(entry)).Name + " / " + entry.Name : entry.Name, Entry = ExportDraft(entry, true), Targets = IconTargets(entry),
+            ManualImage = entry.IconSource == ZincatMaIconSource.Image, SourceImage = entry.IconInput, ImagePath = entry.IconInputPath,
+            Apply = image => WritePhotoIcon(entry, image)
+        }).ToList();
+    }
+    void CaptureIcon(ZincatMaEntry entry)
+    {
+        if (EditorApplication.isPlayingOrWillChangePlaymode) throw new InvalidOperationException("请退出运行模式后截图。");
+        if (entry.IconSource == ZincatMaIconSource.Image)
+        {
+            if (entry.IconInput) ImportIconImage(entry, entry.IconInput);
+            else if (ZincatMaPhotoWindow.IsImageFile(entry.IconInputPath) && System.IO.File.Exists(entry.IconInputPath)) ImportIconFile(entry, entry.IconInputPath);
+            else if (entry.Icon) ImportIconImage(entry, entry.Icon);
+            else ChooseIconFile(entry);
+            return;
+        }
+        var targets = IconTargets(entry);
+        if (!ZincatMaPhotoRenderer.CanCapture(targets))
+        {
+            result = entry.Icon == null ? "没有可截图的物件或网格，图标保持留空。需要时可选择特殊图标来源。" : "没有可截图的网格，现有图标已保留。"; resultError = false; return;
+        }
+        var option = new ZincatMaPhotoOption { Name = entry.Name, Entry = ExportDraft(entry, true), Targets = targets };
+        var image = ZincatMaPhotoWindow.Render(option, ZincatMaPhotoWindow.ReadSettings());
+        try { WritePhotoIcon(entry, image); } finally { DestroyImmediate(image); }
+    }
+    void ImportIconImage(ZincatMaEntry entry, Texture2D source)
+    {
+        var image = ZincatMaPhotoWindow.ProcessImage(source, entry.Name);
+        try { Remember("放入自定义图标"); entry.IconSource = ZincatMaIconSource.Image; entry.IconInput = source; entry.IconInputPath = null; WritePhotoIcon(entry, image); }
+        finally { DestroyImmediate(image); }
+    }
+    void ImportIconFile(ZincatMaEntry entry, string source)
+    {
+        var image = ZincatMaPhotoWindow.ProcessImageFile(source, entry.Name);
+        try { Remember("放入自定义图标"); entry.IconSource = ZincatMaIconSource.Image; entry.IconInput = null; entry.IconInputPath = source; WritePhotoIcon(entry, image); }
+        finally { DestroyImmediate(image); }
+    }
+    void ChooseIconFile(ZincatMaEntry entry)
+    {
+        var path = EditorUtility.OpenFilePanelWithFilters("选择图标图片", "", new[] { "图片", "png,jpg,jpeg" });
+        if (!string.IsNullOrEmpty(path)) ImportIconFile(entry, path);
+    }
+    VisualElement IconSourceUI(ZincatMaEntry entry)
+    {
+        var section = new Foldout { text = "特殊图标来源（可选）", value = entry.IconExpanded };
+        section.RegisterValueChangedCallback(e => { if (e.target == section) entry.IconExpanded = e.newValue; });
+        var names = new List<string> { "关联物件 / 网格（默认）", "单独指定场景物件", "自定义图片" };
+        var mode = new DropdownField("图标来源", names, (int)entry.IconSource);
+        mode.RegisterValueChangedCallback(e => Perform(() => { Remember("设置图标来源"); entry.IconSource = (ZincatMaIconSource)mode.index; })); section.Add(mode);
+        if (entry.IconSource == ZincatMaIconSource.SceneObjects)
+        {
+            section.Add(ZincatQuickMenuStyle.Hint("仅作为截图来源，不绑定到 MA 动作；包含所放物件的子级网格。", 3));
+            var targets = new VisualElement(); section.Add(targets);
+            foreach (var target in entry.IconTargets.ToArray())
+            {
+                int index = entry.IconTargets.IndexOf(target); var row = Row();
+                var field = new ObjectField { objectType = typeof(GameObject), allowSceneObjects = true, value = target }; Elastic(field);
+                field.RegisterValueChangedCallback(e => Edit(() => { var value = e.newValue as GameObject; if (value != null && !Editable(value)) throw new InvalidOperationException("请选择场景或 Prefab 编辑中的物件。"); Remember("修改截图来源"); entry.IconTargets[index] = value; })); row.Add(field);
+                row.Add(new Button(() => Perform(() => { Remember("移除截图来源"); entry.IconTargets.RemoveAt(index); })) { text = "×" }); targets.Add(row);
+            }
+            var add = new ObjectField("添加场景物件") { objectType = typeof(GameObject), allowSceneObjects = true };
+            add.RegisterValueChangedCallback(e => { if (e.newValue is GameObject obj) Perform(() => AddIconTargets(entry, new[] { obj })); }); section.Add(add);
+            section.Add(new Button(() => Perform(() => AddIconTargets(entry, Selection.gameObjects))) { text = "＋ 选中层级物件" });
+            RegisterLocalDrop(targets, objects => Perform(() => AddIconTargets(entry, objects)));
+        }
+        if (entry.IconSource == ZincatMaIconSource.Image)
+        {
+            var source = new ObjectField("放入图片") { objectType = typeof(Texture2D), allowSceneObjects = false, value = entry.IconInput };
+            source.RegisterValueChangedCallback(e => { if (e.newValue is Texture2D image) Perform(() => ImportIconImage(entry, image)); else Perform(() => { Remember("移除自定义图片"); entry.IconInput = null; entry.IconInputPath = null; BindIcon(entry, null); }); }); section.Add(source);
+            section.Add(new Button(() => Perform(() => ChooseIconFile(entry))) { text = "选择 PNG / JPG 文件…" });
+            section.Add(ZincatQuickMenuStyle.Hint("自动处理为 256×256，保持比例与透明边缘，原文件不变。", 3));
+        }
+        var actions = Row(); actions.Add(new Button(() => Perform(() => CaptureIcon(entry))) { text = entry.IconSource == ZincatMaIconSource.Image ? "更新图片" : "拍摄 / 刷新图标" });
+        actions.Add(new Button(() => Perform(() => BindIcon(entry, null))) { text = "清除图标", tooltip = "清除菜单引用，保留来源和图片文件" }); section.Add(actions);
+        return section;
+    }
+    void AddIconTargets(ZincatMaEntry entry, IEnumerable<GameObject> targets)
+    {
+        var valid = targets.Where(t => t != null && Editable(t)).Distinct().ToArray();
+        if (valid.Length == 0) return;
+        Remember("添加特殊截图来源"); entry.IconSource = ZincatMaIconSource.SceneObjects;
+        foreach (var target in valid) if (!entry.IconTargets.Contains(target)) entry.IconTargets.Add(target);
+    }
+    void RegisterIconDrop(VisualElement area, ZincatMaEntry entry)
+    {
+        bool Accepts() => DragAndDrop.objectReferences.OfType<Texture2D>().Any() || DragAndDrop.paths.Any(ZincatMaPhotoWindow.IsImageFile) || DragObjects().Length > 0;
+        area.RegisterCallback<DragUpdatedEvent>(e => { if (!Accepts()) return; DragAndDrop.visualMode = DragAndDropVisualMode.Copy; e.StopPropagation(); });
+        area.RegisterCallback<DragPerformEvent>(e =>
+        {
+            if (!Accepts()) return;
+            var image = DragAndDrop.objectReferences.OfType<Texture2D>().FirstOrDefault(); var path = DragAndDrop.paths.FirstOrDefault(ZincatMaPhotoWindow.IsImageFile); var objects = DragObjects();
+            DragAndDrop.AcceptDrag(); e.StopPropagation();
+            Perform(() => { if (image != null) ImportIconImage(entry, image); else if (path != null) ImportIconFile(entry, path); else { AddIconTargets(entry, objects); CaptureIcon(entry); } });
+        });
+    }
+    void WritePhotoIcon(ZincatMaEntry entry, Texture2D image)
+    {
+        if (this == null || (!switches.Contains(entry) && !groups.Any(g => g.Values.Contains(entry)))) throw new InvalidOperationException("原卡片已移除，请重新读取菜单。");
+        const string folder = "Assets/Zincat/Cache/MaMenuIcons";
+        var parts = folder.Split('/'); string current = parts[0];
+        foreach (var part in parts.Skip(1)) { if (!AssetDatabase.IsValidFolder(current + "/" + part)) AssetDatabase.CreateFolder(current, part); current += "/" + part; }
+        var assetPath = AssetDatabase.GenerateUniqueAssetPath(folder + "/" + ZincatMaPhotoWindow.SafeName(entry.Name) + "_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".png");
+        System.IO.File.WriteAllBytes(assetPath, image.EncodeToPNG()); AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport);
+        var importer = AssetImporter.GetAtPath(assetPath) as TextureImporter;
+        if (importer == null) throw new InvalidOperationException("图标导入失败，请重试。");
+        importer.textureType = TextureImporterType.Default; importer.alphaIsTransparency = true; importer.sRGBTexture = true;
+        importer.mipmapEnabled = false; importer.maxTextureSize = 256; importer.wrapMode = TextureWrapMode.Clamp; importer.filterMode = FilterMode.Bilinear;
+        Zincat.Clothing.Editor.WardrobeIconStorage.SetCompression(importer); ZincatMaPhotoWindow.WriteSource(importer, entry); importer.SaveAndReimport();
+        var icon = AssetDatabase.LoadAssetAtPath<Texture2D>(assetPath); if (!icon) throw new InvalidOperationException("图标导入失败。");
+        BindIcon(entry, icon);
+    }
+    void BindIcon(ZincatMaEntry entry, Texture2D icon)
+    {
+        ModularAvatarMenuItem item = null; ZincatMaEntry native = null; bool baselineMatches = false;
+        if (entry.SourceObject != null)
+        {
+            item = entry.SourceObject.GetComponent<ModularAvatarMenuItem>(); if (item == null || item.Control == null) throw new InvalidOperationException("原菜单项已失效，请重新读取菜单。");
+            native = ReadIntOption(entry.SourceObject); baselineMatches = EntryFingerprint(native) == entry.SourceFingerprint;
+        }
+        else if (!string.IsNullOrEmpty(entry.SourceFingerprint)) throw new InvalidOperationException("原菜单项已删除，请重新读取菜单。");
+        Undo.IncrementCurrentGroup(); int undo = Undo.GetCurrentGroup(); Undo.SetCurrentGroupName("更新菜单图标"); Remember("更新菜单图标"); entry.Icon = icon;
+        if (item != null)
+        {
+            Undo.RecordObject(item, "更新菜单图标"); item.Control.icon = icon; DirtyNative(item);
+            if (baselineMatches) { native.Icon = icon; entry.SourceFingerprint = EntryFingerprint(native); }
+            foreach (var group in groups.Where(g => g.SourceMenu != null && g.KnownOptions.Contains(entry.SourceObject))) SyncIntMenuIcon(group.SourceMenu, group.KnownOptions);
+            EditorSceneManager.MarkSceneDirty(item.gameObject.scene);
+        }
+        EditorUtility.SetDirty(this); Undo.FlushUndoRecordObjects(); Undo.CollapseUndoOperations(undo);
+        result = item != null ? "图标已更新，并同步到原菜单。" : "图标已更新，生成菜单时直接使用。"; resultError = false; BuildUI(); Repaint();
     }
     void Edit(Action action)
     {
@@ -215,7 +388,7 @@ public class IntegrateMovementTool : EditorWindow
             fold.style.marginTop = 7;
             fold.RegisterValueChangedCallback(e => { if (e.target == fold) SetComponentExpanded(entry, choice, e.newValue); });
             var actions = Row();
-            var note = ZincatQuickMenuStyle.Hint("取消勾选的项目会保留为草稿。", 0); Elastic(note); actions.Add(note);
+            var note = new VisualElement(); Elastic(note); actions.Add(note);
             actions.Add(new Button(() => EditComponent(entry, () => { Remember("移除组件并保留草稿"); SetComponent(entry, choice, false); })) { text = "移除组件", tooltip = "配置会保留，重新添加可以恢复；也可 Ctrl+Z 撤销" }); fold.Add(actions);
             fold.Add(kind == 0 ? ObjectBindingUI(entry) : MeshConfigurationUI(entry, kind == 1)); host.Add(fold);
         }
@@ -449,13 +622,13 @@ public class IntegrateMovementTool : EditorWindow
     static bool HasComponent(ZincatMaEntry entry, int kind) => kind == 0 ? entry.Objects : kind == 1 ? entry.Shapes : entry.Materials;
     static void SetComponent(ZincatMaEntry entry, int kind, bool value)
     { if (kind == 0) entry.Objects = value; else if (kind == 1) entry.Shapes = value; else entry.Materials = value; }
-    ZincatMaGroup NewGroup() { var group = new ZincatMaGroup(); groups.Add(group); return group; }
+    ZincatMaGroup NewGroup() { var group = new ZincatMaGroup(); groups.Add(group); activeGroupKey = group.AutoParameter; return group; }
     ZincatMaEntry AddValue(ZincatMaGroup group, string name = null)
     {
         if (!groups.Contains(group)) throw new InvalidOperationException("参数组已失效。");
         int? available = ZincatMaDraftRules.NextIntValue(group.Values.Select(e => e.Value));
         if (!available.HasValue) throw new InvalidOperationException("这个组的 0–255 已用完，请新建参数组。");
-        Remember("添加 Int 选项"); var entry = new ZincatMaEntry { Name = name ?? "选项 " + available.Value, Value = available.Value }; group.Values.Add(entry); return entry;
+        Remember("添加 Int 选项"); activeGroupKey = group.AutoParameter; var entry = new ZincatMaEntry { Name = name ?? "选项 " + available.Value, Value = available.Value }; group.Values.Add(entry); return entry;
     }
     void AddObjects(GameObject[] objects, ZincatMaGroup destination = null)
     {
@@ -467,7 +640,7 @@ public class IntegrateMovementTool : EditorWindow
         Remember("添加物品开关卡片");
         if (intMode)
         {
-            var group = destination ?? groups.LastOrDefault() ?? NewGroup();
+            var group = destination ?? ActiveGroup ?? NewGroup();
             if (group.Values.Count + batch.Length > 256) throw new InvalidOperationException("该组剩余 Int 值不足，请减少选择或新建参数组。");
             foreach (var obj in batch) { var entry = AddValue(group, obj.name); entry.Bindings.Add(new ZincatMaBinding { Target = obj, Active = !obj.activeSelf }); }
         }
@@ -503,18 +676,29 @@ public class IntegrateMovementTool : EditorWindow
         if (generate == null) return;
         var entries = Entries().ToArray(); var counts = CountAllDrafts(); string issue = Validate();
         bool canStart = (intMode ? groups.Count > 0 : entries.Length > 0) && !EditorApplication.isPlayingOrWillChangePlaymode;
-        generate.text = intMode && groups.Any(g => g.SourceMenu != null) ? "写回已读取菜单 / 生成新菜单" : "生成 MA 组件与参数";
+        int loaded = groups.Count(g => g.SourceMenu != null), fresh = groups.Count - loaded;
+        generate.text = !intMode ? "生成 " + entries.Length + " 个独立开关" : loaded == 0 ? "生成 " + fresh + " 个 Int 菜单" : fresh == 0 ? "写回 " + loaded + " 个 Int 菜单" : "写回 " + loaded + " 个菜单，并生成 " + fresh + " 个新菜单";
+        if (groupPicker != null)
+        {
+            var names = groups.Select((g, i) => (i + 1) + ". " + g.Name).ToList();
+            if (!groupPicker.choices.SequenceEqual(names)) groupPicker.choices = names;
+            if (ActiveGroup != null) groupPicker.SetValueWithoutNotify(names[groups.IndexOf(ActiveGroup)]);
+        }
+        if (intMode && ActiveGroup != null) { addSelection.text = "＋ 选中物件 → 当前组"; addSelection.tooltip = "添加到：“" + ActiveGroup.Name + "”。组内 Int 值自动避重。"; }
         generate.SetEnabled(canStart); generate.style.opacity = canStart ? 1 : .45f;
         addSelection.SetEnabled(Selection.gameObjects.Any(o => o != null && o.scene.IsValid() && !EditorUtility.IsPersistent(o)));
         foreach (var pair in summaries)
         {
             var entry = pair.Key; var c = CountDraft(entry); var kinds = Enumerable.Range(0, 3).Where(k => HasComponent(entry, k)).Select(ComponentLabel);
-            pair.Value.text = (intMode ? "值 " + entry.Value + " · " : "") + (kinds.Any() ? string.Join(" · ", kinds) : "请添加组件") + " · " + c.Ready + " 项可写入" + (c.Pending > 0 ? " · " + c.Pending + " 项待填" : "");
+            pair.Value.text = (kinds.Any() ? string.Join(" · ", kinds) : "请添加组件") + " · " + c.Ready + " 项可写入" + (c.Pending > 0 ? " · " + c.Pending + " 项待填" : "");
         }
+        foreach (var update in cardUpdates.Values) update();
+        foreach (var pair in groupSummaries) pair.Value.text = (pair.Key.SourceMenu != null ? "编辑已有菜单" : "新菜单") + " · " + pair.Key.Values.Count + " 个选项 · 共用 1 个 Int 参数";
         foreach (var row in rowUpdates.Values.ToArray()) row.Update();
         status.text = issue ?? counts.Ready + " 项已完成 · " + counts.Pending + " 项待填写 · " + counts.Disabled + " 项未参与生成";
         feedback.text = result ?? ""; feedback.messageType = resultError ? HelpBoxMessageType.Error : HelpBoxMessageType.Info;
         feedback.style.display = string.IsNullOrEmpty(result) ? DisplayStyle.None : DisplayStyle.Flex;
+        reloadSource.style.display = resultError && result != null && result.Contains("重新读取") && intMode && ActiveGroup?.SourceMenu != null ? DisplayStyle.Flex : DisplayStyle.None;
     }
 
     void InstallScrollRestoration(ScrollView view)
@@ -663,7 +847,7 @@ public class IntegrateMovementTool : EditorWindow
         if (intMode)
             foreach (var group in groups.Where(g => g.SourceMenu != null || !string.IsNullOrEmpty(g.SourceParameter)))
             {
-                error = ValidateImportedGroup(group); if (error != null) { result = error; resultError = true; return; }
+                error = ValidateImportedGroup(group); if (error != null) { activeGroupKey = group.AutoParameter; result = error; resultError = true; return; }
                 foreach (var copy in group.Values.Select(e => exports[e]))
                     if (copy.Targets.Any(t => t.scene != group.SourceMenu.scene || Owner(t) != Owner(group.SourceContainer))) { result = group.Name + "：新配置需要属于已读取菜单的同一场景、同一角色。草稿会保留。"; resultError = true; return; }
             }
@@ -703,6 +887,7 @@ public class IntegrateMovementTool : EditorWindow
                             var obj = CreateSwitch(copy, menu.scene, menu, group.EffectiveParameter, true); MarkOption(obj, menu, marker);
                             var original = group.Values.First(e => ReferenceEquals(exports[e], copy)); original.SourceObject = obj; original.SourceFingerprint = EntryFingerprint(ReadIntOption(obj)); linked.Values.Add(original); linked.KnownOptions.Add(obj);
                         }
+                        SyncIntMenuIcon(menu, linked.KnownOptions);
                         linkedGroups.Add(linked); created.Add(menu);
                     }
                 }
@@ -761,7 +946,7 @@ public class IntegrateMovementTool : EditorWindow
         var menuItem = menu.GetComponent<ModularAvatarMenuItem>();
         if (menuItem == null || menuItem.Control == null || menuItem.Control.type != VRCExpressionsMenu.Control.ControlType.SubMenu || menuItem.MenuSource != SubmenuSource.Children)
             throw new InvalidOperationException("请拖入使用子级作为菜单来源的 MA Int 子菜单。");
-        var container = menuItem.menuSource_otherObjectChildren != null ? menuItem.menuSource_otherObjectChildren : menu;
+        var container = MenuChildSource(menuItem);
         if (!Editable(container) || container.scene != menu.scene) throw new InvalidOperationException("菜单的子级来源无效，请在 MA Inspector 中检查。");
         if (!reload && groups.Any(g => g.SourceMenu == menu)) { result = "这个菜单已经读取，请在对应参数组里继续编辑。"; resultError = false; return; }
         var options = container.transform.Cast<Transform>().Select(t => t.gameObject).Select(o => new { Object = o, Item = o.GetComponent<ModularAvatarMenuItem>() })
@@ -778,10 +963,10 @@ public class IntegrateMovementTool : EditorWindow
         var group = new ZincatMaGroup { Name = string.IsNullOrEmpty(menuItem.label) ? menu.name : menuItem.label, Parameter = parameter, SourceParameter = parameter, SourceMenu = menu, SourceContainer = container };
         foreach (var option in matching)
         {
-            var entry = ReadIntOption(option.Object);
+            var entry = ReadIntOption(option.Object); entry.Expanded = true;
             entry.SourceFingerprint = EntryFingerprint(entry); group.Values.Add(entry); group.KnownOptions.Add(option.Object);
         }
-        Remember("读取 Int 菜单"); int existing = groups.FindIndex(g => g.SourceMenu == menu); if (reload && existing >= 0) groups[existing] = group; else groups.Add(group);
+        Remember("读取 Int 菜单"); activeGroupKey = group.AutoParameter; int existing = groups.FindIndex(g => g.SourceMenu == menu); if (reload && existing >= 0) groups[existing] = group; else groups.Add(group);
         result = "已读取 “" + group.Name + "” 的 " + group.Values.Count + " 个选项。添加新对象后，点击“写回已读取菜单”；现有菜单位置和未编辑选项会保留。"; resultError = false;
     }
     static ZincatMaEntry ReadIntOption(GameObject obj)
@@ -819,7 +1004,7 @@ public class IntegrateMovementTool : EditorWindow
                 GetImportedMesh(entry.MaterialMeshes, renderer).Rows.Add(new ZincatMaMeshSetting { Slot = row.MaterialIndex, Material = row.Material, AllowNullMaterial = row.Material == null });
             }
         }
-        return entry;
+        ZincatMaPhotoWindow.RestoreSource(entry); return entry;
     }
     static GameObject ResolveReference(AvatarObjectReference reference, Component owner, string collection, int index)
     {
@@ -854,13 +1039,17 @@ public class IntegrateMovementTool : EditorWindow
         }
         return text.ToString();
     }
+    static GameObject MenuChildSource(ModularAvatarMenuItem item) => item.menuSource_otherObjectChildren != null ? item.menuSource_otherObjectChildren : item.gameObject;
     string ValidateImportedGroup(ZincatMaGroup group)
     {
         if (!Editable(group.SourceMenu) || !Editable(group.SourceContainer) || group.SourceContainer.scene != group.SourceMenu.scene) return "已读取菜单或其子级来源已失效，请重新读取。";
         var stage = PrefabStageUtility.GetCurrentPrefabStage();
         if (stage != null && group.SourceMenu.scene != stage.scene) return "请在菜单所属场景或 Prefab 中写回。";
         var menuItem = group.SourceMenu.GetComponent<ModularAvatarMenuItem>();
-        if (menuItem == null || menuItem.Control == null || menuItem.Control.type != VRCExpressionsMenu.Control.ControlType.SubMenu || menuItem.MenuSource != SubmenuSource.Children || (menuItem.menuSource_otherObjectChildren ?? group.SourceMenu) != group.SourceContainer) return "菜单来源已变化，请重新读取。";
+        if (menuItem == null || menuItem.Control == null) return group.Name + "：原物件缺少有效的 MA Menu Item，请重新读取。";
+        if (menuItem.Control.type != VRCExpressionsMenu.Control.ControlType.SubMenu) return group.Name + "：原物件已改为非子菜单类型，请在 MA 中恢复子菜单后重新读取。";
+        if (menuItem.MenuSource != SubmenuSource.Children) return group.Name + "：菜单来源已改为菜单资源，请在 MA 中改回使用子级后重新读取。";
+        if (MenuChildSource(menuItem) != group.SourceContainer) return group.Name + "：子级来源物件已改变，请重新读取。当前草稿保留。";
         var declaration = group.SourceMenu.GetComponent<ModularAvatarParameters>();
         if (group.EffectiveParameter != group.SourceParameter && declaration != null && declaration.parameters.Any(p => !p.isPrefix && p.nameOrPrefix == group.EffectiveParameter)) return "新参数名已在原菜单中使用，请换一个名称。";
         if (group.SourceContainer.transform.Cast<Transform>().Select(t => t.gameObject).Except(group.KnownOptions).Any(obj => { var item = obj.GetComponent<ModularAvatarMenuItem>(); return item != null && item.Control != null && item.Control.type == VRCExpressionsMenu.Control.ControlType.Toggle && item.Control.parameter?.name == group.SourceParameter; })) return "原菜单中已添加新选项，请重新读取后继续编辑，避免 Int 值重复。当前草稿会保留。";
@@ -927,7 +1116,19 @@ public class IntegrateMovementTool : EditorWindow
             entry.SourceFingerprint = EntryFingerprint(ReadIntOption(obj));
         }
         foreach (var removed in group.KnownOptions.Where(o => o != null && !updated.Contains(o)).ToArray()) Undo.DestroyObjectImmediate(removed);
-        group.KnownOptions = updated; group.SourceParameter = group.EffectiveParameter; return menu;
+        group.KnownOptions = updated; group.SourceParameter = group.EffectiveParameter;
+        SyncIntMenuIcon(menu, updated); return menu;
+    }
+    static void SyncIntMenuIcon(GameObject menu, IEnumerable<GameObject> children)
+    {
+        var root = menu.GetComponent<ModularAvatarMenuItem>();
+        if (root == null || root.Control == null || root.Control.type != VRCExpressionsMenu.Control.ControlType.SubMenu) return;
+        var options = children.Where(o => o != null).Select(o => o.GetComponent<ModularAvatarMenuItem>())
+            .Where(i => i != null && i.Control != null && i.Control.type == VRCExpressionsMenu.Control.ControlType.Toggle && i.Control.icon != null && (i.Control.value == 0 || i.Control.value == 1)).ToArray();
+        var value = ZincatMaDraftRules.IntCoverValue(options.Select(i => (int)i.Control.value));
+        var icon = value.HasValue ? options.First(i => i.Control.value == value.Value).Control.icon : null;
+        if (root.Control.icon == icon) return;
+        Undo.RecordObject(root, "同步 Int 总菜单图标"); root.Control.icon = icon; DirtyNative(root);
     }
     static void UpdateIntDeclaration(GameObject menu, string oldParameter, string parameter)
     {
@@ -998,6 +1199,10 @@ internal class ZincatMaEntry
     public bool Expanded = true;
     public bool IconExpanded;
     public Texture2D Icon;
+    public ZincatMaIconSource IconSource;
+    public List<GameObject> IconTargets = new List<GameObject>();
+    public Texture2D IconInput;
+    public string IconInputPath;
     public string Name = "新开关";
     public string Parameter = "";
     public string AutoParameter = "ZincatSwitch_" + Guid.NewGuid().ToString("N");
@@ -1014,6 +1219,8 @@ internal class ZincatMaEntry
     internal string EffectiveParameter => string.IsNullOrWhiteSpace(Parameter) ? AutoParameter : Parameter.Trim();
 }
 
+internal enum ZincatMaIconSource { Targets, SceneObjects, Image }
+
 [Serializable]
 internal class ZincatMaBinding
 {
@@ -1025,6 +1232,7 @@ internal class ZincatMaBinding
 [Serializable]
 internal class ZincatMaGroup
 {
+    public bool SettingsExpanded;
     public GameObject SourceMenu, SourceContainer;
     public string SourceParameter;
     public List<GameObject> KnownOptions = new List<GameObject>();
@@ -1071,6 +1279,19 @@ internal sealed class ZincatMaDraftCount
 
 internal static class ZincatMaDraftRules
 {
+    internal static int? IntCoverValue(IEnumerable<int> values)
+    {
+        bool hasOne = false;
+        foreach (int value in values) { if (value == 0) return 0; if (value == 1) hasOne = true; }
+        return hasOne ? (int?)1 : null;
+    }
+    internal static Vector2Int FitIconSize(int width, int height)
+    {
+        if (width <= 0 || height <= 0) throw new ArgumentOutOfRangeException("图片尺寸必须大于 0。");
+        double scale = 256.0 / Math.Max(width, height);
+        return new Vector2Int(Math.Max(1, (int)Math.Round(width * scale)), Math.Max(1, (int)Math.Round(height * scale)));
+    }
+    internal static string IntValueIssue(int value, IEnumerable<int> otherValues) => value < 0 || value > 255 ? "Int 值须在 0–255 之间。" : otherValues.Contains(value) ? "同组 Int 值重复，请换一个未占用的值。" : null;
     internal static void SetWeightText(ZincatMaMeshSetting row, string text)
     {
         row.WeightText = text ?? "";
@@ -1174,7 +1395,7 @@ internal static class ZincatQuickMenuStyle
             Color hover = primary ? new Color32(30, 114, 220, 255) : EditorGUIUtility.isProSkin ? new Color32(84, 84, 87, 255) : new Color32(223, 225, 230, 255);
             b.style.minHeight = 28; b.style.flexShrink = 0; b.style.color = primary ? Color.white : Text; b.style.backgroundColor = idle;
             if (selected) b.style.unityFontStyleAndWeight = FontStyle.Bold;
-            b.style.paddingLeft = b.style.paddingRight = 8; Border(b, primary || selected ? Accent : Line, 1, 6);
+            b.style.paddingLeft = b.style.paddingRight = b.name == "quick-icon-button" ? 2 : 8; Border(b, primary || selected ? Accent : Line, 1, 6);
             b.RegisterCallback<MouseEnterEvent>(_ => b.style.backgroundColor = hover);
             b.RegisterCallback<MouseLeaveEvent>(_ => b.style.backgroundColor = idle);
             b.RegisterCallback<FocusInEvent>(_ => Border(b, Focus, 1, 6));
@@ -1196,7 +1417,7 @@ internal static class ZincatQuickMenuStyle
     {
         field.style.minWidth = 0; field.style.minHeight = 28; field.style.flexShrink = 1;
         var label = field.Q<Label>(className: "unity-base-field__label");
-        if (label != null && !string.IsNullOrEmpty(label.text)) { label.style.minWidth = label.style.width = 78; label.style.color = Muted; }
+        if (label != null && !string.IsNullOrEmpty(label.text)) { label.style.minWidth = label.style.width = field.ClassListContains("quick-inline-value") ? 14 : 78; label.style.color = Muted; }
         if (input == null) return;
         input.style.minWidth = 0; input.style.minHeight = 28; input.style.flexShrink = 1; input.style.color = Text; input.style.overflow = Overflow.Hidden;
         input.style.backgroundColor = EditorGUIUtility.isProSkin ? (Color)new Color32(48, 48, 50, 255) : Color.white; Border(input, Line, 1, 4);

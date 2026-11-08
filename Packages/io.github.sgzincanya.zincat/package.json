@@ -1,14 +1,14 @@
 {
   "name": "io.github.sgzincanya.zincat",
   "displayName": "Zincat",
-  "version": "2.11.0",
+  "version": "2.11.1",
   "unity": "2022.3",
   "description": "Zincat avatar tools: wardrobe, switches, lighting, password lock, avatar splitting, translation and dance previews.",
   "author": {
     "name": "SgZincanya",
     "url": "https://github.com/SgZincanya"
   },
-  "url": "https://github.com/SgZincanya/Zincat/releases/download/v2.11.0/io.github.sgzincanya.zincat-2.11.0.zip",
+  "url": "https://github.com/SgZincanya/Zincat/releases/download/v2.11.1/io.github.sgzincanya.zincat-2.11.1.zip",
   "documentationUrl": "https://github.com/SgZincanya/Zincat#readme",
   "changelogUrl": "https://github.com/SgZincanya/Zincat/releases",
   "vpmDependencies": {
@@ -160,6 +160,14 @@
     "Assets/Zincat/Zincat兼容/StarmeshMeshMatcher/Editor/Integration/ZincatStarmeshMatcherWindow.cs": "a34cc38f6498d0f498f9ada1f1057a3f",
     "Assets/Zincat/菜单翻译助手/Editor/MenuTranslationClipboard.cs": "8d57fadf24a447840a63f3aee1914b3a",
     "Assets/Zincat/菜单翻译助手/Editor/MenuTranslationWindow.cs": "4924da8ff6526ad439d8f8752ac455e3",
-    "Assets/Zincat/菜单翻译助手/Editor/MenuTranslationWindow.UI.cs": "5b89ed39a4f69ee44b7f179885f2716f"
+    "Assets/Zincat/菜单翻译助手/Editor/MenuTranslationWindow.UI.cs": "5b89ed39a4f69ee44b7f179885f2716f",
+    "Assets/Zincat/Editor/Ma_MenuPhoto.cs": "79724cfa4656eae4ea8c6deb278ed72f",
+    "Assets/Zincat/ColorOverview/Editor/ColorOverviewAI.cs": "24b75843f0878a14eab522f59d98e26c",
+    "Assets/Zincat/ColorOverview/Editor/ColorOverviewCaptions.cs": "b695d94153572b44cb7b845753be528f",
+    "Assets/Zincat/ColorOverview/Editor/ColorOverviewList.cs": "1e9e0f518e93f9248a30a13b545222d7",
+    "Assets/Zincat/ColorOverview/Editor/ColorOverviewPathProtocol.cs": "0c1518a21507bd04e8bee01cd62cfdd2",
+    "Assets/Zincat/ColorOverview/Editor/ColorOverviewProtocol.cs": "bebfc73acf104f746a57fc4afb14389a",
+    "Assets/Zincat/ColorOverview/Editor/ColorOverviewUI.cs": "2f491d75b0e034f42bc24392c2e626e8",
+    "Assets/Zincat/ColorOverview/Editor/ColorOverviewWindow.cs": "d6e6434b5123ca845a4cab0ea7bc7afa"
   }
 }

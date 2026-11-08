@@ -93,6 +93,14 @@ namespace Zincat.Clothing.Editor
 
         internal static Texture2D Capture(IEnumerable<GameObject> targets, Quaternion avatarRotation, float yaw, float pitch = 22, float padding = .1f, Texture2D overwrite = null, bool transparentCompatibility = false, string outputFolder = null)
         {
+            var texture = CapturePreview(targets, avatarRotation, yaw, pitch, padding, transparentCompatibility);
+            try { return SavePng(texture.EncodeToPNG(), overwrite, outputFolder); }
+            finally { UnityEngine.Object.DestroyImmediate(texture); }
+        }
+
+        // 返回内存图片，由调用方决定缓存位置；保持原有工程图标保存流程。
+        internal static Texture2D CapturePreview(IEnumerable<GameObject> targets, Quaternion avatarRotation, float yaw, float pitch = 22, float padding = .1f, bool transparentCompatibility = false)
+        {
             if (float.IsNaN(yaw) || float.IsInfinity(yaw) || float.IsNaN(pitch) || float.IsInfinity(pitch) || float.IsNaN(padding) || float.IsInfinity(padding))
                 throw new InvalidOperationException("拍摄参数必须是有效数字。");
             pitch = Mathf.Clamp(pitch, -80, 80); padding = Mathf.Clamp(padding, .02f, .4f);
@@ -245,7 +253,7 @@ namespace Zincat.Clothing.Editor
                 finally { RenderTexture.active = previousTarget; RenderTexture.ReleaseTemporary(scaled); }
                 var pixels = result.GetPixels32();
                 if (!pixels.Any(p => p.a > 16)) throw new InvalidOperationException("截图为空，请换一个拍摄角度，或手动拖入图标。");
-                return SavePng(result.EncodeToPNG(), overwrite, outputFolder);
+                var captured = result; result = null; captured.hideFlags = HideFlags.HideAndDontSave; return captured;
             }
             finally
             {
