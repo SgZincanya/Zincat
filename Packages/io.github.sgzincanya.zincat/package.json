@@ -1,14 +1,14 @@
 {
   "name": "io.github.sgzincanya.zincat",
   "displayName": "Zincat",
-  "version": "2.11.2",
+  "version": "2.11.3",
   "unity": "2022.3",
   "description": "Zincat avatar tools: wardrobe, switches, lighting, password lock, avatar splitting, translation and dance previews.",
   "author": {
     "name": "SgZincanya",
     "url": "https://github.com/SgZincanya"
   },
-  "url": "https://github.com/SgZincanya/Zincat/releases/download/v2.11.2/io.github.sgzincanya.zincat-2.11.2.zip",
+  "url": "https://github.com/SgZincanya/Zincat/releases/download/v2.11.3/io.github.sgzincanya.zincat-2.11.3.zip",
   "documentationUrl": "https://github.com/SgZincanya/Zincat#readme",
   "changelogUrl": "https://github.com/SgZincanya/Zincat/releases",
   "vpmDependencies": {

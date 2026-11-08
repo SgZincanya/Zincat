@@ -30,7 +30,7 @@ namespace Zincat.Clothing.Editor
         private const string GeneratedPrefix = "MA衣柜_";
         private const int MainCount = 12;
         private const int TotalCount = 21;
-        private const int CardSize = 200;
+        private const int CardSize = 176;
         private static Color WindowColor => EditorGUIUtility.isProSkin ? new Color32(52, 52, 52, 255) : new Color(.95f, .95f, .96f);
         private static Color CardColor => EditorGUIUtility.isProSkin ? new Color32(58, 58, 58, 255) : Color.white;
         private static Color SelectedColor => EditorGUIUtility.isProSkin ? new Color(.17f, .23f, .31f) : new Color(.91f, .95f, 1f);
@@ -1048,28 +1048,28 @@ namespace Zincat.Clothing.Editor
             card.style.flexShrink = 0;
             card.style.marginRight = 9;
             card.style.marginBottom = 9;
-            card.style.paddingLeft = 11;
-            card.style.paddingRight = 11;
-            card.style.paddingTop = 10;
-            card.style.paddingBottom = 9;
+            card.style.paddingLeft = 8;
+            card.style.paddingRight = 8;
+            card.style.paddingTop = 8;
+            card.style.paddingBottom = 7;
             card.style.backgroundColor = selectedIndex == index ? SelectedColor : CardColor;
             SetRoundedBorder(card, selectedIndex == index ? AccentColor : BorderColor);
 
             var cardHeading = new VisualElement();
             cardHeading.style.flexDirection = FlexDirection.Row;
             cardHeading.style.alignItems = Align.FlexStart;
-            cardHeading.style.minHeight = 38;
+            cardHeading.style.minHeight = 30;
             cardHeading.style.flexShrink = 0;
             var thumbnail = new Image { image = slot.Icon, scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
-            thumbnail.style.width = 24; thumbnail.style.height = 24; thumbnail.style.flexShrink = 0;
-            thumbnail.style.marginRight = 6;
+            thumbnail.style.width = 20; thumbnail.style.height = 20; thumbnail.style.flexShrink = 0;
+            thumbnail.style.marginRight = 5;
             cardHeading.Add(thumbnail);
             var headingText = new VisualElement();
             headingText.style.flexGrow = 1;
             headingText.style.flexShrink = 1;
             headingText.style.minWidth = 0;
             var category = new Label(PartDisplayName(slot.Category)) { tooltip = PartDisplayName(slot.Category), name = "part-category-" + slot.Key };
-            category.style.fontSize = 15;
+            category.style.fontSize = 14;
             category.style.unityFontStyleAndWeight = FontStyle.Normal;
             category.style.whiteSpace = WhiteSpace.NoWrap;
             category.style.overflow = Overflow.Hidden;
@@ -1121,7 +1121,7 @@ namespace Zincat.Clothing.Editor
             var menuNameCaption = new Label("菜单名称");
             menuNameCaption.style.fontSize = 11;
             menuNameCaption.style.color = MutedColor;
-            menuNameCaption.style.marginTop = 5;
+            menuNameCaption.style.marginTop = 3;
             card.Add(menuNameCaption);
             var menuNameField = new TextField { value = slot.MenuName };
             menuNameField.name = "part-menu-name-" + slot.Key;
@@ -1155,7 +1155,7 @@ namespace Zincat.Clothing.Editor
             vocabulary.style.alignSelf = Align.FlexStart;
             vocabulary.style.flexShrink = 0;
             vocabulary.style.marginLeft = 0;
-            vocabulary.style.marginTop = 4;
+            vocabulary.style.marginTop = 2;
             vocabulary.RegisterCallback<ClickEvent>(evt => evt.StopPropagation());
             card.Add(vocabulary);
 
@@ -1165,7 +1165,7 @@ namespace Zincat.Clothing.Editor
                 counter.text = "外部配置 · 只读保留";
                 counter.tooltip = slot.ExternalReadOnlyReason;
             }
-            counter.style.marginTop = 5;
+            counter.style.marginTop = 3;
             counter.style.whiteSpace = WhiteSpace.NoWrap;
             counter.style.overflow = Overflow.Hidden;
             counter.style.textOverflow = TextOverflow.Ellipsis;
@@ -1177,11 +1177,11 @@ namespace Zincat.Clothing.Editor
                 ? (advancedOnly ? "已开启形态键或材质替换" : "")
                 : string.Join("\n", slot.Targets.Where(target => target != null).Take(2).Select(target => target.name)) +
                   (count > 2 ? "\n…" : ""));
-            preview.style.marginTop = 5;
+            preview.style.marginTop = 3;
             preview.style.whiteSpace = WhiteSpace.Normal;
             preview.style.color = MutedColor;
             preview.style.fontSize = 11;
-            preview.style.maxHeight = 28;
+            preview.style.maxHeight = 24;
             preview.style.overflow = Overflow.Hidden;
             preview.tooltip = string.Join("\n", slot.Targets.Where(target => target != null).Select(target => target.name));
             card.Add(preview);

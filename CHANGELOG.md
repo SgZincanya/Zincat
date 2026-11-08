@@ -1,5 +1,11 @@
 # Changes
 
+## 2.11.3
+
+- Refine wardrobe part cards into a compact 176 px layout.
+- Reduce thumbnail size, padding and spacing while retaining tooltips and label truncation.
+- Keep generated icons, caches and personal settings unchanged.
+
 ## 2.11.2
 
 - Increase wardrobe part cards to 200 px and prevent cards and controls from shrinking.
