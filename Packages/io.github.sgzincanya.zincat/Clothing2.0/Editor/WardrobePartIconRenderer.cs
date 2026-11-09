@@ -91,6 +91,22 @@ namespace Zincat.Clothing.Editor
             return errors.Length == 0 || errors.Any(message => !IsNeverPassError(shader, message));
         }
 
+        private static Matrix4x4 BakeSnapshot(SkinnedMeshRenderer skin, Mesh mesh)
+        {
+            // Use the transform-local bake together with its full world matrix. With
+            // useScale=false, inherited scale can already be present in the vertices.
+            skin.BakeMesh(mesh, true);
+            return skin.transform.localToWorldMatrix;
+        }
+
+        private static void DrawPreviewMesh(Camera camera, Item item, Material material, int subMesh)
+        {
+            // PreviewRenderUtility.DrawMesh decomposes the matrix into positive scale
+            // and rotation. Preserve the same matrix used for framing the mesh.
+            Graphics.DrawMesh(item.Mesh, item.Matrix, material, 0, camera, subMesh, null,
+                ShadowCastingMode.Off, false, null, LightProbeUsage.Off, null);
+        }
+
         internal static Texture2D Capture(IEnumerable<GameObject> targets, Quaternion avatarRotation, float yaw, float pitch = 22, float padding = .1f, Texture2D overwrite = null, bool transparentCompatibility = false, string outputFolder = null)
         {
             var texture = CapturePreview(targets, avatarRotation, yaw, pitch, padding, transparentCompatibility);
@@ -99,7 +115,14 @@ namespace Zincat.Clothing.Editor
         }
 
         // 返回内存图片，由调用方决定缓存位置；保持原有工程图标保存流程。
-        internal static Texture2D CapturePreview(IEnumerable<GameObject> targets, Quaternion avatarRotation, float yaw, float pitch = 22, float padding = .1f, bool transparentCompatibility = false)
+        internal static IEnumerable<Renderer> VisibleRenderers(IEnumerable<GameObject> targets) =>
+            targets.Where(t => t != null).SelectMany(t => t.GetComponentsInChildren<Renderer>(true)
+                .Where(r => r != null && WardrobeMaIconPreview.IsSupportedRenderer(r) && VisibleBelowRoot(r, t))).Distinct();
+
+        internal static Texture2D CapturePreview(IEnumerable<GameObject> targets, Quaternion avatarRotation, float yaw, float pitch = 22, float padding = .1f, bool transparentCompatibility = false) =>
+            CaptureRenderers(VisibleRenderers(targets), avatarRotation, yaw, pitch, padding, transparentCompatibility);
+
+        internal static Texture2D CaptureRenderers(IEnumerable<Renderer> renderers, Quaternion avatarRotation, float yaw, float pitch, float padding, bool transparentCompatibility)
         {
             if (float.IsNaN(yaw) || float.IsInfinity(yaw) || float.IsNaN(pitch) || float.IsInfinity(pitch) || float.IsNaN(padding) || float.IsInfinity(padding))
                 throw new InvalidOperationException("拍摄参数必须是有效数字。");
@@ -118,16 +141,17 @@ namespace Zincat.Clothing.Editor
             {
                 // 覆盖本次所有 DrawMesh/Render 请求，避免把异步编译占位色写入 PNG。
                 ShaderUtil.allowAsyncCompilation = false;
-                foreach (var original in targets.Where(t => t != null).SelectMany(t => t.GetComponentsInChildren<Renderer>(true).Where(r => WardrobeMaIconPreview.IsSupportedRenderer(r) && VisibleBelowRoot(r, t))).Distinct())
+                foreach (var original in renderers)
                 {
                     var renderer = WardrobeMaIconPreview.Active?.Resolve(original) ?? original;
                     Mesh mesh = null;
+                    var matrix = renderer.localToWorldMatrix;
                     if (renderer is SkinnedMeshRenderer skin && skin.sharedMesh != null)
-                    { mesh = new Mesh(); baked.Add(mesh); skin.BakeMesh(mesh); }
+                    { mesh = new Mesh(); baked.Add(mesh); matrix = BakeSnapshot(skin, mesh); }
                     else if (renderer is MeshRenderer) mesh = renderer.GetComponent<MeshFilter>()?.sharedMesh;
                     if (mesh == null || mesh.vertexCount == 0 || mesh.subMeshCount == 0) continue;
                     if (renderer.sharedMaterials.Length == 0 || renderer.sharedMaterials.All(m => m == null)) continue;
-                    items.Add(new Item { Mesh = mesh, Matrix = renderer.localToWorldMatrix, Materials = renderer.sharedMaterials });
+                    items.Add(new Item { Mesh = mesh, Matrix = matrix, Materials = renderer.sharedMaterials });
                 }
                 if (items.Count == 0) throw new InvalidOperationException("这个分类中没有可拍摄的网格与材质，请检查分件，或手动拖入图片。");
                 var rotation = avatarRotation * Quaternion.Euler(0, yaw, 0);
@@ -197,14 +221,14 @@ namespace Zincat.Clothing.Editor
                         {
                             var source = item.Materials[Mathf.Min(i, item.Materials.Length - 1)];
                             if (source != null && backMaterials.TryGetValue(source, out var back))
-                                preview.DrawMesh(item.Mesh, item.Matrix, back, i);
+                                DrawPreviewMesh(camera, item, back, i);
                         }
                 }
                 foreach (var item in items)
                     for (int i = 0; i < item.Mesh.subMeshCount; i++)
                     {
                         var material = item.Materials[Mathf.Min(i, item.Materials.Length - 1)];
-                        if (material != null) preview.DrawMesh(item.Mesh, item.Matrix,
+                        if (material != null) DrawPreviewMesh(camera, item,
                             frontMaterials.TryGetValue(material, out var color) ? color : material, i);
                     }
                 var used = items.SelectMany(item => item.Materials).Where(m => m != null)

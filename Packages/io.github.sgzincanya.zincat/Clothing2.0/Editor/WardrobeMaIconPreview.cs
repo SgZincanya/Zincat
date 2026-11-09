@@ -186,22 +186,36 @@ namespace Zincat.Clothing.Editor
             currentTargets = key;
         }
 
-        private void ApplyBlendshapeSync()
+        private void ApplyBlendshapeSync() => ApplyBlendshapeSync(selected, Resolve);
+
+        // Bindings are read from the source objects; weights may only be written to preview renderers.
+        internal static void ApplyBlendshapeSync(IEnumerable<Renderer> targets, Func<Renderer, Renderer> resolve)
         {
             var links = new Dictionary<(SkinnedMeshRenderer, string), (SkinnedMeshRenderer source, string shape, AnimationCurve curve)>();
-            foreach (var renderer in selected.OfType<SkinnedMeshRenderer>())
+            var outputs = new HashSet<SkinnedMeshRenderer>(targets.OfType<SkinnedMeshRenderer>().Where(r => r != null));
+            var dependencies = new HashSet<SkinnedMeshRenderer>(outputs);
+            var queue = new Queue<SkinnedMeshRenderer>(outputs);
+            while (queue.Count > 0)
+            {
+                var renderer = queue.Dequeue();
                 foreach (var sync in renderer.GetComponents<ModularAvatarBlendshapeSync>())
+                {
+                    if (sync == null || sync.Bindings == null) continue;
                     foreach (var binding in sync.Bindings)
                     {
                         var obj = binding.ReferenceMesh?.Get(sync); var source = obj == null ? null : obj.GetComponent<SkinnedMeshRenderer>();
                         string local = string.IsNullOrWhiteSpace(binding.LocalBlendshape) ? binding.Blendshape : binding.LocalBlendshape;
-                        if (source?.sharedMesh == null || renderer.sharedMesh == null || renderer.sharedMesh.GetBlendShapeIndex(local) < 0 || source.sharedMesh.GetBlendShapeIndex(binding.Blendshape) < 0) continue;
+                        if (source == null || source.sharedMesh == null || renderer.sharedMesh == null || string.IsNullOrWhiteSpace(local) || string.IsNullOrWhiteSpace(binding.Blendshape) ||
+                            renderer.sharedMesh.GetBlendShapeIndex(local) < 0 || source.sharedMesh.GetBlendShapeIndex(binding.Blendshape) < 0) continue;
                         links[(renderer, local)] = (source, binding.Blendshape, binding.RemapCurve);
+                        if (dependencies.Add(source)) queue.Enqueue(source);
                     }
+                }
+            }
             var visiting = new HashSet<(SkinnedMeshRenderer, string)>(); var values = new Dictionary<(SkinnedMeshRenderer, string), float>();
             float Current((SkinnedMeshRenderer renderer, string shape) key)
             {
-                var proxy = Resolve(key.renderer) as SkinnedMeshRenderer; int index = proxy?.sharedMesh == null ? -1 : proxy.sharedMesh.GetBlendShapeIndex(key.shape);
+                var proxy = resolve(key.renderer) as SkinnedMeshRenderer; int index = proxy == null || proxy.sharedMesh == null ? -1 : proxy.sharedMesh.GetBlendShapeIndex(key.shape);
                 return index >= 0 ? proxy.GetBlendShapeWeight(index) : key.renderer.GetBlendShapeWeight(key.renderer.sharedMesh.GetBlendShapeIndex(key.shape));
             }
             float Evaluate((SkinnedMeshRenderer renderer, string shape) key)
@@ -224,13 +238,15 @@ namespace Zincat.Clothing.Editor
                 }
                 visiting.Remove(key); return values[key] = value;
             }
-            foreach (var key in links.Keys)
+            var changes = new List<(SkinnedMeshRenderer renderer, int index, float value)>();
+            foreach (var key in links.Keys.Where(k => outputs.Contains(k.Item1)))
             {
-                var proxy = Resolve(key.Item1) as SkinnedMeshRenderer;
+                var proxy = resolve(key.Item1) as SkinnedMeshRenderer;
                 if (proxy == null || proxy == key.Item1) throw new InvalidOperationException("同步目标没有独立预览网格，未修改来源网格。");
                 int index = proxy.sharedMesh == null ? -1 : proxy.sharedMesh.GetBlendShapeIndex(key.Item2);
-                if (index >= 0) proxy.SetBlendShapeWeight(index, Evaluate(key));
+                if (index >= 0) changes.Add((proxy, index, Evaluate(key)));
             }
+            foreach (var change in changes) change.renderer.SetBlendShapeWeight(change.index, change.value);
         }
 
         private static object Member(object obj, string name)

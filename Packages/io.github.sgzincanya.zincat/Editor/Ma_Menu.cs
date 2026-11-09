@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
@@ -66,6 +66,7 @@ public class IntegrateMovementTool : EditorWindow
     {
         result = null;
         try { action(); }
+        catch (NullReferenceException ex) { Debug.LogException(ex); result = "操作遇到无效引用，详细位置已记录到 Unity Console。"; resultError = true; }
         catch (Exception ex) { result = ex.Message; resultError = true; }
         BuildUI();
     }
@@ -95,7 +96,7 @@ public class IntegrateMovementTool : EditorWindow
         var root = rootVisualElement; root.Clear(); root.style.flexGrow = 1; root.style.backgroundColor = ZincatQuickMenuStyle.Surface;
         root.style.paddingLeft = root.style.paddingRight = 14; root.style.paddingTop = root.style.paddingBottom = 12;
         var titleRow = Row(); var title = new Label("MA 组件生成器"); title.style.fontSize = 20; title.style.marginBottom = 6; Elastic(title); titleRow.Add(title);
-        titleRow.Add(new Button(() => ZincatMaPhotoWindow.OpenSettings(PhotoOptions)) { text = "分件截图设置", tooltip = "预览角度、留白与透明兼容，也可一键拍摄全部选项" }); root.Add(titleRow);
+        titleRow.Add(new Button(() => ZincatMaPhotoWindow.OpenSettings(this)) { text = "分件截图设置", tooltip = "预览角度、留白与透明兼容，也可一键拍摄全部选项" }); root.Add(titleRow);
         root.Add(ZincatQuickMenuStyle.Hint("手动配置物品、形态键和材质替换；也可留空生成原生 MA 组件", 10));
         var modes = Row(); modes.style.minHeight = 30; modes.style.flexShrink = 0;
         foreach (bool useInt in new[] { false, true })
@@ -203,7 +204,7 @@ public class IntegrateMovementTool : EditorWindow
         }
         var remove = new Button(() => Perform(() => { Remember("移除开关"); if (group == null) switches.Remove(entry); else group.Values.Remove(entry); })) { text = "×", tooltip = entry.SourceObject != null ? "移除此选项，写回时删除原菜单项；可撤销" : "移除这张卡片" }; remove.style.width = 28; remove.style.flexShrink = 0; header.Add(remove);
         var summary = ZincatQuickMenuStyle.Hint("", 0); summary.style.marginTop = 3; box.Add(summary); summaries[entry] = summary;
-        cardUpdates[entry] = () => { thumbnail.image = entry.Icon; thumbnail.style.display = entry.Icon != null ? DisplayStyle.Flex : DisplayStyle.None; photo.text = entry.Icon != null ? "" : entry.IconSource == ZincatMaIconSource.Image ? "放图" : ZincatMaPhotoRenderer.CanCapture(IconTargets(entry)) ? "拍照" : ""; };
+        cardUpdates[entry] = () => { thumbnail.image = entry.Icon; thumbnail.style.display = entry.Icon != null ? DisplayStyle.Flex : DisplayStyle.None; photo.text = entry.Icon != null ? "" : entry.IconSource == ZincatMaIconSource.Image ? "放图" : ZincatMaPhotoRenderer.CanCapture(IconTargets(entry), ClosedIconTargets(entry)) ? "拍照" : ""; };
         if (group != null)
         {
             var issue = ZincatQuickMenuStyle.Hint("", 0); issue.style.color = EditorGUIUtility.isProSkin ? (Color)new Color32(240, 193, 132, 255) : (Color)new Color32(132, 75, 0, 255); box.Add(issue);
@@ -221,12 +222,16 @@ public class IntegrateMovementTool : EditorWindow
         RegisterLocalDrop(box, objects => EditComponent(entry, () => BindObjects(entry, objects))); return box;
     }
     GameObject[] IconTargets(ZincatMaEntry entry) => (entry.IconSource == ZincatMaIconSource.SceneObjects ? (IEnumerable<GameObject>)entry.IconTargets : entry.Targets).Where(t => t != null && Editable(t)).Distinct().ToArray();
-    List<ZincatMaPhotoOption> PhotoOptions()
+    HashSet<GameObject> ClosedIconTargets(ZincatMaEntry entry) => intMode && entry.IconSource == ZincatMaIconSource.Targets && entry.Objects
+        ? new HashSet<GameObject>(entry.Bindings.Where(b => b.Enabled && !b.Active && Editable(b.Target)).Select(b => b.Target))
+        : null;
+    internal List<ZincatMaPhotoOption> PhotoOptions()
     {
         if (this == null) throw new InvalidOperationException("请重新打开 MA 组件生成器。");
         return Entries().Select(entry => new ZincatMaPhotoOption
         {
             Key = entry.AutoParameter, Name = intMode ? groups.First(g => g.Values.Contains(entry)).Name + " / " + entry.Name : entry.Name, Entry = ExportDraft(entry, true), Targets = IconTargets(entry),
+            ClosedTargets = ClosedIconTargets(entry),
             ManualImage = entry.IconSource == ZincatMaIconSource.Image, SourceImage = entry.IconInput, ImagePath = entry.IconInputPath,
             Apply = image => WritePhotoIcon(entry, image)
         }).ToList();
@@ -243,11 +248,12 @@ public class IntegrateMovementTool : EditorWindow
             return;
         }
         var targets = IconTargets(entry);
-        if (!ZincatMaPhotoRenderer.CanCapture(targets))
+        var closed = ClosedIconTargets(entry);
+        if (!ZincatMaPhotoRenderer.CanCapture(targets, closed))
         {
             result = entry.Icon == null ? "没有可截图的物件或网格，图标保持留空。需要时可选择特殊图标来源。" : "没有可截图的网格，现有图标已保留。"; resultError = false; return;
         }
-        var option = new ZincatMaPhotoOption { Name = entry.Name, Entry = ExportDraft(entry, true), Targets = targets };
+        var option = new ZincatMaPhotoOption { Name = entry.Name, Entry = ExportDraft(entry, true), Targets = targets, ClosedTargets = closed };
         var image = ZincatMaPhotoWindow.Render(option, ZincatMaPhotoWindow.ReadSettings());
         try { WritePhotoIcon(entry, image); } finally { DestroyImmediate(image); }
     }
