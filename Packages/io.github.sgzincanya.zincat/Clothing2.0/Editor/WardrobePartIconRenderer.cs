@@ -91,6 +91,17 @@ namespace Zincat.Clothing.Editor
             return errors.Length == 0 || errors.Any(message => !IsNeverPassError(shader, message));
         }
 
+        private static Material FindVariantWithMissingParent(Material material)
+        {
+            while (material.isVariant)
+            {
+                var parent = material.parent;
+                if (parent == null) return material;
+                material = parent;
+            }
+            return null;
+        }
+
         private static Matrix4x4 BakeSnapshot(SkinnedMeshRenderer skin, Mesh mesh)
         {
             // Use the transform-local bake together with its full world matrix. With
@@ -205,6 +216,16 @@ namespace Zincat.Clothing.Editor
                     {
                         // 仅对支持这些绘制属性的透明材质创建临时副本；不修改来源材质或 Renderer。
                         if (!SupportsTransparentCompatibility(source)) continue;
+                        var brokenVariant = FindVariantWithMissingParent(source);
+                        if (brokenVariant != null)
+                        {
+                            // Unity can render the existing variant but cannot clone its broken parent chain.
+                            // The normal draw pass below uses the source material for this submesh.
+                            WardrobeDiagnostics.Record("截图", "材质缺少父级，按当前外观绘制",
+                                "材质=" + source.name + "; 路径=" + AssetDatabase.GetAssetPath(source) +
+                                "; 缺少父级的变体=" + brokenVariant.name + "; 路径=" + AssetDatabase.GetAssetPath(brokenVariant));
+                            continue;
+                        }
                         // 队列保证全部背面先于正面；透明表面不再预写深度挡住内侧。
                         var back = new Material(source) { hideFlags = HideFlags.HideAndDontSave, renderQueue = 2990 };
                         backMaterials.Add(source, back);
