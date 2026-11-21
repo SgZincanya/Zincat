@@ -33,6 +33,17 @@ namespace Zincat.Lighting.Editor
             return properties.Distinct().ToArray();
         }
 
+        internal static HashSet<Material> GetSkippedPoiyomiMaterials(IEnumerable<Material> materials, ZincatLightingPrefab settings)
+        {
+            var properties = RequiredProperties(settings);
+            // A prefab can ship the optimized shader without the Poiyomi shaders used to regenerate it.
+            // Already animated materials can still be used as-is.
+            var skipped = new HashSet<Material>(materials.Where(m =>
+                MaterialSupport.IsLocked(m) && MaterialSupport.PoiyomiReadinessIssue(m, properties) != null));
+            if (skipped.Count > 0 && MaterialSupport.HasPoiyomiSourceShaders()) skipped.Clear();
+            return skipped;
+        }
+
         public static bool IsReady(Material material, ZincatLightingPrefab settings)
         {
             return ReadinessIssue(material, settings) == null;
@@ -67,7 +78,9 @@ namespace Zincat.Lighting.Editor
         public static int PrepareMaterials(ZincatLightingPrefab settings)
         {
             LightingBuilder.Validate(settings);
-            var sources = Materials(settings).Where(m => MaterialSupport.Identify(m) == ShaderFamily.Poiyomi && !IsReady(m, settings)).ToArray();
+            var pending = Materials(settings).Where(m => MaterialSupport.Identify(m) == ShaderFamily.Poiyomi && !IsReady(m, settings)).ToArray();
+            var skipped = GetSkippedPoiyomiMaterials(pending, settings);
+            var sources = pending.Where(m => !skipped.Contains(m)).ToArray();
             if (sources.Length == 0) return 0;
             Type optimizer = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType("Thry.ThryEditor.ShaderOptimizer", false)).FirstOrDefault(t => t != null);
             MethodInfo lockMethod = optimizer?.GetMethod("LockMaterials", BindingFlags.Public | BindingFlags.Static);

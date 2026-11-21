@@ -89,7 +89,9 @@ namespace Zincat.Lighting.Editor
             }.Where(c => c.control.enabled).ToList();
             var renderers = avatar.GetComponentsInChildren<Renderer>(true)
                 .Where(r => settings.excludedRenderers == null || !settings.excludedRenderers.Contains(r)).ToList();
-            EnsureUniquePaths(avatar.transform, renderers);
+            var skipped = LightingSetup.GetSkippedPoiyomiMaterials(
+                renderers.SelectMany(renderer => renderer.sharedMaterials).Distinct(), settings);
+            EnsureUniquePaths(avatar.transform, renderers, skipped);
             LightingSetup.SynchronizeMenu(settings, false);
             LightingSetup.ValidateMenu(settings, avatar.transform);
             if (!settings.minimum.enabled && settings.minimumMenu != null) Object.DestroyImmediate(settings.minimumMenu);
@@ -103,7 +105,7 @@ namespace Zincat.Lighting.Editor
                 foreach (Material source in renderer.sharedMaterials)
                 {
                     ShaderFamily family = MaterialSupport.Identify(source);
-                    if (family == ShaderFamily.Unsupported) continue;
+                    if (family == ShaderFamily.Unsupported || skipped.Contains(source)) continue;
                     if (family == ShaderFamily.Poiyomi)
                     {
                         string issue = LightingSetup.ReadinessIssue(source, settings);
@@ -132,7 +134,19 @@ namespace Zincat.Lighting.Editor
                 if (item != null) Object.DestroyImmediate(item);
             }
             channels = channels.Where(c => controlled[c.channel].Count > 0).ToList();
-            if (channels.Count == 0) throw new InvalidOperationException("没有找到支持所选光照属性的 lilToon 或 Poiyomi 材质。");
+            if (channels.Count == 0)
+            {
+                if (skipped.Count == 0)
+                    throw new InvalidOperationException("没有找到支持所选光照属性的 lilToon 或 Poiyomi 材质。");
+
+                // Omit the empty menu from the build while keeping the prefab's other objects and components.
+                var installer = settings.GetComponent<ModularAvatarMenuInstaller>();
+                if (installer != null) Object.DestroyImmediate(installer);
+                var submenu = settings.submenuObject.GetComponent<ModularAvatarMenuItem>();
+                if (submenu != null) Object.DestroyImmediate(submenu);
+                Object.DestroyImmediate(settings);
+                return;
+            }
             CheckParameterConflicts(avatar, channels.Select(c => c.parameter));
             var generated = new GameObject("Zincat Lighting Generated");
             generated.transform.SetParent(avatar.transform, false);
@@ -201,12 +215,12 @@ namespace Zincat.Lighting.Editor
             return clip;
         }
 
-        private static void EnsureUniquePaths(Transform root, List<Renderer> renderers)
+        private static void EnsureUniquePaths(Transform root, List<Renderer> renderers, HashSet<Material> skipped)
         {
             var seen = new HashSet<string>();
             foreach (Renderer renderer in renderers)
             {
-                if (!renderer.sharedMaterials.Any(m => MaterialSupport.Identify(m) != ShaderFamily.Unsupported)) continue;
+                if (!renderer.sharedMaterials.Any(m => MaterialSupport.Identify(m) != ShaderFamily.Unsupported && !skipped.Contains(m))) continue;
                 for (var transform = renderer.transform; transform != null && transform != root; transform = transform.parent)
                     if (transform.name.Contains("/")) throw new InvalidOperationException("对象名称包含斜杠，无法生成可靠的动画路径：" + transform.name + "。请先重命名该对象。");
                 string path = AnimationUtility.CalculateTransformPath(renderer.transform, root);

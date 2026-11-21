@@ -15,7 +15,7 @@ namespace Zincat.Lighting.Editor
         private bool showAdvanced;
         private bool showTest;
         private double materialScanTime = double.NegativeInfinity;
-        private int lilCount, poiCount, pendingCount;
+        private int lilCount, poiCount, pendingCount, skippedPoiCount;
         private string pendingReason;
 
         private void OnEnable()
@@ -82,7 +82,12 @@ namespace Zincat.Lighting.Editor
                             Execute(() => { LightingSetup.PrepareMaterials(settings); InvalidateMaterials(); });
                 }
             }
-            if (valid && lilCount + poiCount == 0) EditorGUILayout.HelpBox("未找到可控制的 lilToon 或 Poiyomi 材质。请检查 Renderer 和排除列表。", MessageType.Warning);
+            if (valid && skippedPoiCount > 0)
+            {
+                string detail = lilCount + poiCount == 0 ? " 此角色不生成光照菜单。" : "";
+                EditorGUILayout.HelpBox($"工程缺少 Poiyomi 原始 Shader，已自动跳过 {skippedPoiCount} 个需重新准备的锁定材质。{detail}", MessageType.Info);
+            }
+            if (valid && lilCount + poiCount + skippedPoiCount == 0) EditorGUILayout.HelpBox("未找到可控制的 lilToon 或 Poiyomi 材质。请检查 Renderer 和排除列表。", MessageType.Warning);
             if (showAdvanced)
             {
                 EditorGUILayout.LabelField($"材质：lilToon {lilCount}，Poiyomi {poiCount}");
@@ -110,10 +115,14 @@ namespace Zincat.Lighting.Editor
         {
             if (EditorApplication.timeSinceStartup - materialScanTime < 1) return;
             materialScanTime = EditorApplication.timeSinceStartup;
-            lilCount = poiCount = pendingCount = 0;
+            lilCount = poiCount = pendingCount = skippedPoiCount = 0;
             pendingReason = null;
-            foreach (var material in LightingSetup.Materials(settings))
+            var materials = LightingSetup.Materials(settings).ToArray();
+            var skipped = valid ? LightingSetup.GetSkippedPoiyomiMaterials(materials, settings) : null;
+            skippedPoiCount = skipped?.Count ?? 0;
+            foreach (var material in materials)
             {
+                if (skipped != null && skipped.Contains(material)) continue;
                 switch (MaterialSupport.Identify(material))
                 {
                     case ShaderFamily.LilToon: lilCount++; break;

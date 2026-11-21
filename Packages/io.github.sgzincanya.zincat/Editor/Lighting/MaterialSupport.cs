@@ -17,7 +17,11 @@ namespace Zincat.Lighting.Editor
         public static ShaderFamily Identify(Material material)
         {
             if (material == null || material.shader == null) return ShaderFamily.Unsupported;
-            string name = material.shader.name;
+            return IdentifyShader(material.shader.name);
+        }
+
+        private static ShaderFamily IdentifyShader(string name)
+        {
             if (name.IndexOf("lilToon", StringComparison.OrdinalIgnoreCase) >= 0) return ShaderFamily.LilToon;
             if (name.IndexOf("Poiyomi", StringComparison.OrdinalIgnoreCase) >= 0) return ShaderFamily.Poiyomi;
             return ShaderFamily.Unsupported;
@@ -25,9 +29,15 @@ namespace Zincat.Lighting.Editor
 
         public static bool IsLocked(Material material)
         {
-            return Identify(material) == ShaderFamily.Poiyomi &&
-                material.shader.name.StartsWith("Hidden/Locked/", StringComparison.OrdinalIgnoreCase);
+            return Identify(material) == ShaderFamily.Poiyomi && IsLockedShader(material.shader.name);
         }
+
+        private static bool IsLockedShader(string name) =>
+            name.StartsWith("Hidden/Locked/", StringComparison.OrdinalIgnoreCase);
+
+        internal static bool HasPoiyomiSourceShaders() =>
+            ShaderUtil.GetAllShaderInfo().Any(shader =>
+                !IsLockedShader(shader.name) && IdentifyShader(shader.name) == ShaderFamily.Poiyomi);
 
         public static string PoiyomiReadinessIssue(Material material, IEnumerable<string> properties)
         {
