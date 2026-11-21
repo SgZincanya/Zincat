@@ -1,6 +1,8 @@
 #if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text;
 using nadena.dev.modular_avatar.core;
@@ -41,6 +43,7 @@ namespace Zincat.Clothing.Editor
         [SerializeField] private GameObject clothingRoot;
         [SerializeField] private string clothingMenuName;
         [SerializeField] private List<PartSlot> slots = new List<PartSlot>();
+        [SerializeField] private List<string> partOrder;
         [SerializeField] private bool showBackups;
         [SerializeField] private bool showUnassignedMeshes;
         [SerializeField] private bool editMode;
@@ -72,6 +75,9 @@ namespace Zincat.Clothing.Editor
 
         private VisualElement mainGrid;
         private VisualElement backupGrid;
+        [SerializeField] private bool repairMissingParts;
+        private Foldout partOrderPanel;
+        [SerializeField] private bool showPartOrder;
         private VisualElement details;
         [SerializeField] private List<OutfitIconDraft> outfitIconDrafts = new List<OutfitIconDraft>();
         private ObjectField outfitIconField;
@@ -331,6 +337,14 @@ namespace Zincat.Clothing.Editor
             reloadButton.style.marginLeft = 8;
             actions.Add(reloadButton);
             root.Add(actions);
+            var transferActions = CreateGrid();
+            transferActions.Add(new Button(() => ExportPartConfiguration(true)) { text = "复制配置" });
+            transferActions.Add(new Button(() => ExportPartConfiguration(false)) { text = "导出 TXT" });
+            transferActions.Add(new Button(() => ImportPartConfiguration(true)) { text = "粘贴配置" });
+            transferActions.Add(new Button(() => ImportPartConfiguration(false)) { text = "从文件导入" });
+            transferActions.Add(new Button(ShowAdvancedReadSettings) { text = "高级设置",
+                tooltip = "设置重新读取菜单时如何处理缺失的高级规则。" });
+            root.Add(transferActions);
             feedback = new HelpBox("", HelpBoxMessageType.Info);
             feedback.style.display = DisplayStyle.None;
             feedback.style.marginBottom = 10;
@@ -434,15 +448,27 @@ namespace Zincat.Clothing.Editor
             previewHint.style.marginBottom = 8;
             scroll.Add(previewHint);
             mainGrid = CreateGrid();
-            scroll.Add(mainGrid);
 
+            scroll.Add(mainGrid);
             var backupFoldout = new Foldout { text = "备用分类 · 9 项", value = showBackups };
             backupFoldout.style.marginTop = 16;
             backupFoldout.style.marginBottom = 10;
-            backupFoldout.RegisterValueChangedCallback(evt => showBackups = evt.newValue);
+            backupFoldout.RegisterValueChangedCallback(evt =>
+            {
+                if (evt.target == backupFoldout) showBackups = evt.newValue;
+            });
             backupGrid = CreateGrid();
             backupFoldout.Add(backupGrid);
             scroll.Add(backupFoldout);
+            partOrderPanel = new Foldout { text = "调整生成菜单顺序", value = showPartOrder };
+            partOrderPanel.RegisterValueChangedCallback(evt =>
+            {
+                if (evt.target != partOrderPanel) return;
+                showPartOrder = evt.newValue;
+                RefreshPartOrderPanel();
+                ApplyTextStyle();
+            });
+            scroll.Add(partOrderPanel);
 
             batchSettings = new VisualElement();
             scroll.Add(batchSettings);
@@ -723,7 +749,7 @@ namespace Zincat.Clothing.Editor
         private ConfigurationState CurrentConfiguration() => new ConfigurationState
         {
             Root = clothingRoot, MenuName = clothingMenuName, ReserveSwitch = reserveOutfitSwitch,
-            Slots = slots, BatchControl = enableBatchControl, Presets = partPresets
+            Slots = slots, BatchControl = enableBatchControl, Presets = partPresets, PartOrder = partOrder
         };
 
         private static ConfigurationState CopyConfiguration(ConfigurationState value) =>
@@ -747,7 +773,7 @@ namespace Zincat.Clothing.Editor
             return new ConfigurationState { Root = clothingRoot, MenuName = ReadMenuName(loadedMenuRoot),
                 ReserveSwitch = marker?.OutfitSwitchNode != null, Slots = restored,
                 BatchControl = marker?.BatchControlNode != null || string.IsNullOrEmpty(marker?.PartParameterPrefix),
-                Presets = presets };
+                Presets = presets, PartOrder = marker?.PartOrder };
         }
 
         // 三方比较：基线 / 窗口草稿 / 当前场景。不同字段可合并，同字段冲突不猜测。
@@ -758,7 +784,7 @@ namespace Zincat.Clothing.Editor
             lastSyncAttemptDraft = PreviewSignature();
             synchronizationAttempts++;
             var skipped = new Dictionary<string, string>();
-            if (!TryReadMenuCore(loadedMenuRoot, clothingRoot, out var restored, out var reason, skipped))
+            if (!TryReadMenuCore(loadedMenuRoot, clothingRoot, out var restored, out var reason, skipped, repairMissingParts))
             {
                 Notify("场景配置未同步", reason + " 原组件已保留，请检查后重新读取。");
                 WardrobeDiagnostics.Record("分件", "同步停止", reason);
@@ -790,6 +816,8 @@ namespace Zincat.Clothing.Editor
                 () => merged.BatchControl = scene.BatchControl, "批量控制");
             string Presets(ConfigurationState data) => JsonUtility.ToJson(new ConfigurationState { Presets = data.Presets });
             Merge(Presets(baseline), Presets(merged), Presets(scene), () => merged.Presets = scene.Presets, "模板");
+            string Order(ConfigurationState data) => string.Join(",", data.PartOrder ?? new List<string>());
+            Merge(Order(baseline), Order(merged), Order(scene), () => merged.PartOrder = scene.PartOrder, "分件顺序");
             for (int i = 0; i < merged.Slots.Count; i++)
             {
                 var old = baseline.Slots[i]; var draft = merged.Slots[i]; var current = scene.Slots[i];
@@ -801,7 +829,8 @@ namespace Zincat.Clothing.Editor
                     continue;
                 }
                 string Name(PartSlot s) => s.MenuName;
-                string Targets(PartSlot s) => string.Join(",", s.Targets.Select(o => o == null ? 0 : o.GetInstanceID()));
+                string Targets(PartSlot s) => string.Join(",", s.Targets.Select(o => o == null ? 0 : o.GetInstanceID())) +
+                    "|" + string.Join("|", s.MissingTargets);
                 string Shapes(PartSlot s) => JsonUtility.ToJson(new PartSlot { UseBlendshapes = s.UseBlendshapes, BlendshapesInverted = s.BlendshapesInverted, Blendshapes = s.Blendshapes });
                 string Materials(PartSlot s) => JsonUtility.ToJson(new PartSlot { UseMaterials = s.UseMaterials, MaterialsInverted = s.MaterialsInverted, Materials = s.Materials });
                 Merge(Name(old), Name(draft), Name(current), () => draft.MenuName = current.MenuName, draft.Key + " 名称");
@@ -809,7 +838,8 @@ namespace Zincat.Clothing.Editor
                 Merge(Icon(old), Icon(draft), Icon(current), () => { draft.Icon = current.Icon; draft.IconConfigured = true; draft.IconGenerated = current.IconGenerated; draft.IconSourceKnown = true; }, draft.Key + " 图标");
                 Merge(old.IconTransparentCompatibility.ToString(), draft.IconTransparentCompatibility.ToString(), current.IconTransparentCompatibility.ToString(),
                     () => draft.IconTransparentCompatibility = current.IconTransparentCompatibility, draft.Key + " 截图兼容");
-                Merge(Targets(old), Targets(draft), Targets(current), () => draft.Targets = current.Targets, draft.Key + " 物体");
+                Merge(Targets(old), Targets(draft), Targets(current), () =>
+                { draft.Targets = current.Targets; draft.MissingTargets = current.MissingTargets; }, draft.Key + " 物体");
                 Merge(Shapes(old), Shapes(draft), Shapes(current), () => { draft.UseBlendshapes = current.UseBlendshapes; draft.BlendshapesInverted = current.BlendshapesInverted; draft.Blendshapes = current.Blendshapes; draft.AdvancedExpanded = true; }, draft.Key + " 形态键");
                 Merge(Materials(old), Materials(draft), Materials(current), () => { draft.UseMaterials = current.UseMaterials; draft.MaterialsInverted = current.MaterialsInverted; draft.Materials = current.Materials; draft.AdvancedExpanded = true; }, draft.Key + " 材质");
             }
@@ -822,6 +852,7 @@ namespace Zincat.Clothing.Editor
             Undo.RecordObject(this, "同步场景 MA 配置");
             clothingMenuName = merged.MenuName; slots = merged.Slots; reserveOutfitSwitch = merged.ReserveSwitch;
             enableBatchControl = merged.BatchControl; partPresets = merged.Presets;
+            partOrder = merged.PartOrder;
             loadedSceneSnapshot = CopyConfiguration(scene);
             loadedConfigurationSignature = ConfigurationSignature(scene);
             loadedNamingSignature = MenuNamingSignature();
@@ -971,6 +1002,7 @@ namespace Zincat.Clothing.Editor
             backupGrid.Clear();
             for (int i = 0; i < slots.Count; i++)
                 (i < MainCount ? mainGrid : backupGrid).Add(CreateCard(i));
+            RefreshPartOrderPanel();
             RefreshDetails();
             ApplyTextStyle();
         }
@@ -1018,6 +1050,113 @@ namespace Zincat.Clothing.Editor
                 button.style.textOverflow = TextOverflow.Ellipsis;
                 unassignedMeshesContent.Add(button);
             }
+        }
+
+        private static IEnumerable<PartSlot> OrderedParts(List<PartSlot> parts, List<string> order)
+        {
+            var defaults = parts.OrderBy(slot => slot.Key.Substring(1), StringComparer.Ordinal)
+                .ThenBy(slot => slot.Backup).ToArray();
+            if (order == null || order.Count == 0) return defaults;
+            var byKey = parts.ToDictionary(slot => slot.Key);
+            return order.Where(key => key != null && byKey.ContainsKey(key)).Distinct().Select(key => byKey[key])
+                .Concat(defaults.Where(slot => !order.Contains(slot.Key)));
+        }
+
+        private void RefreshPartOrderPanel()
+        {
+            partOrderPanel.Clear();
+            if (!showPartOrder) return;
+            var order = OrderedParts(slots, partOrder).Where(HasOrderablePart).ToList();
+            var surface = new VisualElement { name = "wardrobe-part-order-surface" };
+            surface.style.backgroundColor = EditorGUIUtility.isProSkin ? (Color)new Color32(64, 64, 66, 255) : (Color)new Color32(231, 232, 235, 255);
+            surface.style.marginTop = 5;
+            surface.style.marginBottom = 10;
+            surface.style.paddingTop = surface.style.paddingBottom = 9;
+            surface.style.paddingLeft = surface.style.paddingRight = 10;
+            SetRoundedBorder(surface, BorderColor);
+            partOrderPanel.Add(surface);
+
+            var toolbar = new VisualElement();
+            toolbar.style.flexDirection = FlexDirection.Row;
+            toolbar.style.flexWrap = Wrap.Wrap;
+            toolbar.style.alignItems = Align.Center;
+            toolbar.style.marginBottom = 6;
+            var help = new Label(order.Count > 1 ? "拖动左侧把手排序" : "已使用的分件");
+            help.style.color = MutedColor;
+            help.style.flexGrow = 1;
+            toolbar.Add(help);
+            var reset = new Button(() =>
+            {
+                Undo.RecordObject(this, "恢复默认分件顺序");
+                partOrder = null;
+                RefreshAll();
+            }) { text = "恢复默认顺序" };
+            reset.SetEnabled(partOrder != null && partOrder.Count > 0);
+            toolbar.Add(reset);
+            surface.Add(toolbar);
+            if (order.Count == 0)
+            {
+                surface.Add(new Label("还没有可排序的分件。"));
+                return;
+            }
+            Color divider = EditorGUIUtility.isProSkin ? new Color32(93, 93, 96, 255) : new Color32(209, 211, 215, 255);
+            const int rowHeight = 31;
+            var list = new ListView
+            {
+                name = "wardrobe-part-order-list",
+                itemsSource = order,
+                fixedItemHeight = rowHeight,
+                selectionType = SelectionType.None,
+                reorderMode = ListViewReorderMode.Animated,
+                reorderable = order.Count > 1,
+                showAlternatingRowBackgrounds = AlternatingRowBackground.None,
+                makeItem = () =>
+                {
+                    var label = new Label();
+                    label.style.unityTextAlign = TextAnchor.MiddleLeft;
+                    label.style.overflow = Overflow.Hidden;
+                    label.style.textOverflow = TextOverflow.Ellipsis;
+                    label.style.paddingLeft = 8;
+                    return label;
+                },
+                bindItem = (element, index) =>
+                {
+                    var slot = order[index];
+                    string name = string.IsNullOrEmpty(slot.MenuName) ? DefaultMenuName(slot.Category, slot.Backup) : slot.MenuName;
+                    if (slot.Backup && !name.EndsWith("（备用）", StringComparison.Ordinal)) name += "（备用）";
+                    ((Label)element).text = name;
+                    element.tooltip = name;
+                    for (var row = element.parent; row != null; row = row.parent)
+                    {
+                        if (!row.ClassListContains(BaseListView.reorderableItemUssClassName)) continue;
+                        row.style.borderBottomWidth = index < order.Count - 1 ? 1 : 0;
+                        row.style.borderBottomColor = divider;
+                        row.Query<VisualElement>(className: BaseListView.reorderableItemHandleBarUssClassName)
+                            .ForEach(bar => bar.style.backgroundColor = MutedColor);
+                        break;
+                    }
+                }
+            };
+            list.style.backgroundColor = EditorGUIUtility.isProSkin ? (Color)new Color32(76, 76, 79, 255) : Color.white;
+            SetRoundedBorder(list, divider);
+            list.style.overflow = Overflow.Hidden;
+            list.style.height = rowHeight * order.Count + 2;
+            list.style.flexShrink = 0;
+            list.itemIndexChanged += (_, __) => SaveDraggedPartOrder(order);
+            surface.Add(list);
+        }
+
+        private static bool HasOrderablePart(PartSlot slot) => string.IsNullOrEmpty(slot.ExternalReadOnlyReason) &&
+            (slot.Targets.Any(target => target != null) || slot.UseBlendshapes || slot.UseMaterials);
+
+        private void SaveDraggedPartOrder(List<PartSlot> reordered)
+        {
+            var visible = new HashSet<string>(reordered.Select(slot => slot.Key));
+            var keys = new Queue<string>(reordered.Select(slot => slot.Key));
+            var updated = OrderedParts(slots, partOrder)
+                .Select(slot => visible.Contains(slot.Key) ? keys.Dequeue() : slot.Key).ToList();
+            Undo.RecordObject(this, "调整分件顺序");
+            partOrder = updated;
         }
 
         private static bool HasMesh(GameObject obj)
@@ -1162,9 +1301,13 @@ namespace Zincat.Clothing.Editor
             var counter = new Label(count == 0 ? (advancedOnly ? "仅高级效果" : "拖入分件") : count + " 个物体");
             if (!string.IsNullOrEmpty(slot.ExternalReadOnlyReason))
             {
-                counter.text = "外部配置 · 只读保留";
+                counter.text = "配置异常 · 只读保留";
                 counter.tooltip = slot.ExternalReadOnlyReason;
             }
+            else if (slot.MissingTargets.Count > 0)
+                counter.text = "待修复 · " + slot.MissingTargets.Count + " 个物体";
+            else if (CountUnresolvedRules(slot) > 0)
+                counter.text = "高级设置待检查";
             counter.style.marginTop = 3;
             counter.style.whiteSpace = WhiteSpace.NoWrap;
             counter.style.overflow = Overflow.Hidden;
@@ -1196,6 +1339,7 @@ namespace Zincat.Clothing.Editor
             card.RegisterCallback<DragUpdatedEvent>(evt =>
             {
                 DragAndDrop.visualMode = clothingRoot != null && DragAndDrop.objectReferences.OfType<GameObject>().Any()
+                    && string.IsNullOrEmpty(slot.ExternalReadOnlyReason)
                     ? DragAndDropVisualMode.Copy : DragAndDropVisualMode.Rejected;
                 evt.StopPropagation();
             });
@@ -1204,6 +1348,12 @@ namespace Zincat.Clothing.Editor
                 if (clothingRoot == null)
                 {
                     Notify("先选择衣服", "请先把衣服根对象拖进上方大框。", "确定");
+                    return;
+                }
+                if (!string.IsNullOrEmpty(slot.ExternalReadOnlyReason))
+                {
+                    Notify("此分件暂不可编辑", slot.ExternalReadOnlyReason);
+                    evt.StopPropagation();
                     return;
                 }
                 var candidates = DragAndDrop.objectReferences.OfType<GameObject>().ToArray();
@@ -1248,6 +1398,34 @@ namespace Zincat.Clothing.Editor
             }
 
 
+            foreach (var path in slot.MissingTargets.ToArray())
+            {
+                var row = new VisualElement();
+                row.Add(new HelpBox("待修复：" + (string.IsNullOrEmpty(path) ? "旧对象路径已丢失" : path),
+                    HelpBoxMessageType.Warning));
+                var replacement = new ObjectField("拖入替换物体") { objectType = typeof(GameObject), allowSceneObjects = true };
+                replacement.RegisterValueChangedCallback(evt =>
+                {
+                    var target = evt.newValue as GameObject;
+                    if (target == null) return;
+                    if (AddTargetsCore(slot, new[] { target }, false) == 0)
+                    {
+                        replacement.SetValueWithoutNotify(null);
+                        Notify("无法补绑", "请选择当前衣服下尚未绑定到此分类、且没有层级冲突的物体。");
+                        return;
+                    }
+                    slot.MissingTargets.Remove(path);
+                    RefreshAll();
+                });
+                row.Add(replacement);
+                row.Add(new Button(() =>
+                {
+                    Undo.RecordObject(this, "移除丢失的分件引用");
+                    slot.MissingTargets.Remove(path);
+                    RefreshAll();
+                }) { text = "移除此引用" });
+                details.Add(row);
+            }
             var targetGrid = CreateGrid();
             DrawPartIcon(iconSettings, slot);
             foreach (var target in slot.Targets.Where(target => target != null).ToArray())
@@ -1613,6 +1791,8 @@ namespace Zincat.Clothing.Editor
                 var card = CreateRuleCard();
                 grid.Add(card);
                 card.Add(new Label("形态键设置"));
+                if (rule.Renderer == null && rule.ImportedTarget != null)
+                    card.Add(new HelpBox("待重新指定网格：" + rule.ImportedTarget.Path, HelpBoxMessageType.Warning));
                 var renderer = new ObjectField("目标网格")
                 {
                     objectType = typeof(SkinnedMeshRenderer), allowSceneObjects = true, value = rule.Renderer
@@ -1620,7 +1800,8 @@ namespace Zincat.Clothing.Editor
                 renderer.RegisterValueChangedCallback(evt =>
                 {
                     rule.Renderer = evt.newValue as SkinnedMeshRenderer;
-                    rule.ShapeName = GetShapeNames(rule.Renderer).FirstOrDefault() ?? "";
+                    var available = GetShapeNames(rule.Renderer);
+                    if (!available.Contains(rule.ShapeName)) rule.ShapeName = available.FirstOrDefault() ?? rule.ShapeName;
                     RefreshDetails();
                 });
                 card.Add(renderer);
@@ -1687,10 +1868,13 @@ namespace Zincat.Clothing.Editor
                 {
                     objectType = typeof(Renderer), allowSceneObjects = true, value = rule.Renderer
                 };
+                if (rule.Renderer == null && rule.ImportedTarget != null)
+                    card.Add(new HelpBox("待重新指定网格：" + rule.ImportedTarget.Path, HelpBoxMessageType.Warning));
                 renderer.RegisterValueChangedCallback(evt =>
                 {
                     rule.Renderer = evt.newValue as Renderer;
-                    rule.MaterialIndex = 0;
+                    if (rule.Renderer != null && rule.MaterialIndex >= rule.Renderer.sharedMaterials.Length)
+                        rule.MaterialIndex = 0;
                     RefreshDetails();
                 });
                 card.Add(renderer);
@@ -1714,6 +1898,8 @@ namespace Zincat.Clothing.Editor
                 {
                     objectType = typeof(Material), allowSceneObjects = false, value = rule.Replacement
                 };
+                if (rule.Replacement == null && !string.IsNullOrEmpty(rule.ImportedMaterialName))
+                    card.Add(new HelpBox("请重新指定替换材质：" + rule.ImportedMaterialName, HelpBoxMessageType.Warning));
                 material.RegisterValueChangedCallback(evt => rule.Replacement = evt.newValue as Material);
                 card.Add(material);
                 var remove = new Button(() =>
@@ -1768,8 +1954,12 @@ namespace Zincat.Clothing.Editor
             return choices;
         }
 
-        private int AddTargets(PartSlot slot, IEnumerable<GameObject> candidates)
+        // Optional replacement selection is kept separate so card drops retain their existing behavior.
+        private int AddTargets(PartSlot slot, IEnumerable<GameObject> candidates) => AddTargetsCore(slot, candidates, true);
+
+        private int AddTargetsCore(PartSlot slot, IEnumerable<GameObject> candidates, bool matchMissing)
         {
+            if (!string.IsNullOrEmpty(slot.ExternalReadOnlyReason)) return 0;
             Undo.RecordObject(this, "分类衣服分件");
             int added = 0;
             int blockedTransfer = 0;
@@ -1794,6 +1984,12 @@ namespace Zincat.Clothing.Editor
                 foreach (var other in previousSlots)
                     other.Targets.RemoveAll(existing => existing == target);
                 slot.Targets.Add(target);
+                if (matchMissing)
+                {
+                    int missing = slot.MissingTargets.IndexOf(AnimationUtility.CalculateTransformPath(target.transform, clothingRoot.transform));
+                    if (missing < 0 && slot.MissingTargets.Count == 1) missing = 0;
+                    if (missing >= 0) slot.MissingTargets.RemoveAt(missing);
+                }
                 added++;
             }
             if (blockedTransfer > 0)
@@ -1816,7 +2012,407 @@ namespace Zincat.Clothing.Editor
 
         private static bool IsUsed(PartSlot slot)
         {
-            return slot.Targets.Any(target => target != null) || slot.UseBlendshapes || slot.UseMaterials || !string.IsNullOrEmpty(slot.ExternalReadOnlyReason);
+            return slot.Targets.Any(target => target != null) || slot.MissingTargets.Count > 0 ||
+                slot.UseBlendshapes || slot.UseMaterials || !string.IsNullOrEmpty(slot.ExternalReadOnlyReason);
+        }
+
+        private void ShowAdvancedReadSettings()
+        {
+            var menu = new GenericMenu();
+            menu.AddItem(new GUIContent("恢复缺失的高级规则"), repairMissingParts, () =>
+            {
+                repairMissingParts = !repairMissingParts;
+                if (repairMissingParts)
+                    Notify("已开启恢复缺失的高级规则", "点击「重新读取菜单」，读回缺少目标或材质的高级规则。");
+            });
+            menu.ShowAsContext();
+        }
+
+        private void ExportPartConfiguration(bool clipboard)
+        {
+            if (clothingRoot == null) { Notify("无法导出", "请先选择衣服。"); return; }
+            if (slots.Any(slot => !string.IsNullOrEmpty(slot.ExternalReadOnlyReason)))
+            {
+                Notify("无法完整导出", "请先修复只读分件。若缺失的是高级规则引用，可在「高级设置」开启「恢复缺失的高级规则」，再重新读取菜单。");
+                return;
+            }
+            try
+            {
+                var contents = WriteConfigurationText(EncodePartConfiguration());
+                if (clipboard)
+                {
+                    EditorGUIUtility.systemCopyBuffer = contents;
+                    Notify("已复制分件配置", "选中目标衣服后，点击「粘贴配置」。");
+                    return;
+                }
+                string path = EditorUtility.SaveFilePanel("导出分件配置", "", clothingRoot.name + "-分件", "txt");
+                if (string.IsNullOrEmpty(path)) return;
+                File.WriteAllText(path, contents, new UTF8Encoding(true));
+                Notify("已导出分件配置", Path.GetFileName(path));
+            }
+            catch (Exception error) { Notify("导出失败", error.Message); }
+        }
+
+        private PortableConfiguration EncodePartConfiguration()
+        {
+            var avatar = clothingRoot.transform.parent;
+            return new PortableConfiguration
+            {
+                Version = 1, MenuName = clothingMenuName, ReserveSwitch = reserveOutfitSwitch,
+                BatchControl = enableBatchControl, Presets = ClonePresets(partPresets),
+                PartOrder = partOrder,
+                Parts = OrderedParts(slots, partOrder).Where(IsUsed).Select(slot => new PortablePart
+                {
+                    Key = slot.Key, Name = slot.MenuName,
+                    Targets = slot.Targets.Select(obj => obj == null ? "" :
+                        AnimationUtility.CalculateTransformPath(obj.transform, clothingRoot.transform))
+                        .Concat(slot.MissingTargets).ToList(),
+                    UseShapes = slot.UseBlendshapes, InvertShapes = slot.BlendshapesInverted,
+                    UseMaterials = slot.UseMaterials, InvertMaterials = slot.MaterialsInverted,
+                    Shapes = slot.Blendshapes.Select(rule => new PortableShape
+                    {
+                        Target = DescribeObject(rule.Renderer, avatar, rule.ImportedTarget),
+                        Name = rule.ShapeName, Value = rule.Value
+                    }).ToList(),
+                    Materials = slot.Materials.Select(rule =>
+                    {
+                        var material = new PortableMaterial
+                        {
+                            Target = DescribeObject(rule.Renderer, avatar, rule.ImportedTarget),
+                            Index = rule.MaterialIndex, AssetName = rule.ImportedMaterialName,
+                            Guid = rule.ImportedMaterialGuid, LocalId = rule.ImportedMaterialId
+                        };
+                        if (rule.Replacement != null && AssetDatabase.TryGetGUIDAndLocalFileIdentifier(
+                                rule.Replacement, out string guid, out long localId))
+                        {
+                            material.Guid = guid;
+                            material.LocalId = localId;
+                            material.AssetName = rule.Replacement.name;
+                        }
+                        return material;
+                    }).ToList()
+                }).ToList()
+            };
+        }
+
+        private void ImportPartConfiguration(bool clipboard)
+        {
+            if (clothingRoot == null) { Notify("无法导入", "请先拖入目标衣服。"); return; }
+            try
+            {
+                string contents;
+                if (clipboard) contents = EditorGUIUtility.systemCopyBuffer;
+                else
+                {
+                    string path = EditorUtility.OpenFilePanelWithFilters("导入分件配置", "",
+                        new[] { "分件配置", "txt,json", "文本配置", "txt", "旧版配置", "json" });
+                    if (string.IsNullOrEmpty(path)) return;
+                    contents = File.ReadAllText(path);
+                }
+                var config = ReadConfigurationText(contents);
+                var imported = DecodePartConfiguration(config, clothingRoot, slots);
+                if ((HasUnsavedConfiguration() || loadedMenuRoot != null || slots.Any(IsUsed)) &&
+                    !EditorUtility.DisplayDialog("导入分件配置", "导入会替换窗口里的分件草稿。点击「生成／更新菜单」时才会应用到场景。",
+                        "导入", "取消")) return;
+                ClearPreview();
+                Undo.RecordObject(this, "导入分件配置");
+                slots = imported;
+                partOrder = config.PartOrder;
+                clothingMenuName = config.MenuName;
+                reserveOutfitSwitch = config.ReserveSwitch ||
+                    !string.IsNullOrEmpty(loadedMenuRoot?.GetComponent<WardrobeGeneratedMenu>()?.OutfitSwitchGroupParameter);
+                enableBatchControl = config.BatchControl;
+                partPresets = ClonePresets(config.Presets);
+                selectedIndex = slots.FindIndex(slot => slot.MissingTargets.Count > 0 || CountUnresolvedRules(slot) > 0);
+                selectedTargets.Clear();
+                showBackups = slots.Skip(MainCount).Any(IsUsed);
+                BuildUI();
+                int found = slots.Sum(slot => slot.Targets.Count);
+                int missing = slots.Sum(slot => slot.MissingTargets.Count);
+                int advanced = slots.Sum(CountUnresolvedRules);
+                Notify("已导入分件草稿", "已匹配 " + found + " 个物体，待补绑 " + missing +
+                    " 个，高级设置待检查 " + advanced + " 条。生成菜单时会跳过未补绑的物体。");
+            }
+            catch (Exception error) { Notify("导入失败", error.Message); }
+        }
+
+        private const string ConfigurationTextHeader = "Zincat 分件配置 v1";
+
+        private static string WriteConfigurationText(PortableConfiguration config)
+        {
+            var text = new StringBuilder().AppendLine(ConfigurationTextHeader);
+            string Flag(bool value) => value ? "是" : "否";
+            void Row(params string[] cells) => text.AppendLine(string.Join("\t", cells.Select(cell => (cell ?? "")
+                .Replace("\\", "\\\\").Replace("\t", "\\t").Replace("\r", "\\r").Replace("\n", "\\n"))));
+            string Scope(PortableObject target) => target == null ? "缺失" : target.AvatarRelative ? "Avatar" : "衣服";
+            Row("菜单", config.MenuName, Flag(config.ReserveSwitch), Flag(config.BatchControl));
+            if (config.PartOrder != null && config.PartOrder.Count > 0)
+                Row(new[] { "顺序" }.Concat(config.PartOrder).ToArray());
+            foreach (var preset in config.Presets)
+                Row(new[] { "模板", preset.Name }.Concat(preset.VisibleKeys).ToArray());
+            foreach (var part in config.Parts)
+            {
+                text.AppendLine();
+                Row("分件", part.Key, part.Name, Flag(part.UseShapes), Flag(part.InvertShapes),
+                    Flag(part.UseMaterials), Flag(part.InvertMaterials));
+                foreach (var target in part.Targets) Row("物体", target);
+                foreach (var shape in part.Shapes)
+                    Row("形态键", Scope(shape.Target), shape.Target?.Path, shape.Name,
+                        shape.Value.ToString("R", CultureInfo.InvariantCulture));
+                foreach (var material in part.Materials)
+                    Row("材质", Scope(material.Target), material.Target?.Path,
+                        material.Index.ToString(CultureInfo.InvariantCulture), material.AssetName,
+                        material.Guid, material.LocalId.ToString(CultureInfo.InvariantCulture));
+            }
+            return text.ToString();
+        }
+
+        private static PortableConfiguration ReadConfigurationText(string contents)
+        {
+            contents = (contents ?? "").TrimStart('\uFEFF', ' ', '\r', '\n', '\t');
+            if (contents.StartsWith("{", StringComparison.Ordinal))
+                return JsonUtility.FromJson<PortableConfiguration>(contents);
+            using (var reader = new StringReader(contents))
+            {
+                if (reader.ReadLine()?.TrimEnd() != ConfigurationTextHeader)
+                    throw new InvalidOperationException("请粘贴或打开 Zincat 导出的分件配置。");
+                var config = new PortableConfiguration
+                {
+                    Version = 1, Presets = new List<WardrobePartPreset>(), Parts = new List<PortablePart>()
+                };
+                PortablePart part = null;
+                bool hasMenu = false;
+                string line;
+                int lineNumber = 1;
+                InvalidOperationException InvalidLine() =>
+                    new InvalidOperationException("第 " + lineNumber + " 行的配置格式有误，请检查字段和分隔符。");
+                bool Flag(string value)
+                {
+                    if (value == "是") return true;
+                    if (value == "否") return false;
+                    throw InvalidLine();
+                }
+                PortableObject Target(string scope, string path)
+                {
+                    if (scope == "缺失") return null;
+                    if (scope != "衣服" && scope != "Avatar") throw InvalidLine();
+                    return new PortableObject { AvatarRelative = scope == "Avatar", Path = path };
+                }
+                while ((line = reader.ReadLine()) != null)
+                {
+                    lineNumber++;
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    var cells = line.Split('\t').Select(cell =>
+                        System.Text.RegularExpressions.Regex.Replace(cell, @"\\[\\trn]", match =>
+                        {
+                            switch (match.Value[1])
+                            {
+                                case 't': return "\t";
+                                case 'r': return "\r";
+                                case 'n': return "\n";
+                                default: return "\\";
+                            }
+                        })).ToArray();
+                    if (!hasMenu && cells[0] != "菜单") throw InvalidLine();
+                    switch (cells[0])
+                    {
+                        case "菜单" when !hasMenu && cells.Length == 4:
+                            config.MenuName = cells[1];
+                            config.ReserveSwitch = Flag(cells[2]);
+                            config.BatchControl = Flag(cells[3]);
+                            hasMenu = true;
+                            break;
+                        case "模板" when part == null && cells.Length >= 2:
+                            config.Presets.Add(new WardrobePartPreset { Name = cells[1], VisibleKeys = cells.Skip(2).ToList() });
+                            break;
+                        case "顺序" when part == null && config.PartOrder == null && cells.Length >= 2:
+                            config.PartOrder = cells.Skip(1).ToList();
+                            break;
+                        case "分件" when cells.Length == 7:
+                            part = new PortablePart
+                            {
+                                Key = cells[1], Name = cells[2], UseShapes = Flag(cells[3]), InvertShapes = Flag(cells[4]),
+                                UseMaterials = Flag(cells[5]), InvertMaterials = Flag(cells[6]), Targets = new List<string>(),
+                                Shapes = new List<PortableShape>(), Materials = new List<PortableMaterial>()
+                            };
+                            config.Parts.Add(part);
+                            break;
+                        case "物体" when part != null && cells.Length == 2:
+                            part.Targets.Add(cells[1]);
+                            break;
+                        case "形态键" when part != null && cells.Length == 5:
+                            if (!float.TryParse(cells[4], NumberStyles.Float, CultureInfo.InvariantCulture, out float value) ||
+                                float.IsNaN(value) || float.IsInfinity(value)) throw InvalidLine();
+                            part.Shapes.Add(new PortableShape { Target = Target(cells[1], cells[2]), Name = cells[3], Value = value });
+                            break;
+                        case "材质" when part != null && cells.Length == 7:
+                            if (!int.TryParse(cells[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out int index) ||
+                                !long.TryParse(cells[6], NumberStyles.Integer, CultureInfo.InvariantCulture, out long id)) throw InvalidLine();
+                            part.Materials.Add(new PortableMaterial
+                            {
+                                Target = Target(cells[1], cells[2]), Index = index,
+                                AssetName = cells[4], Guid = cells[5], LocalId = id
+                            });
+                            break;
+                        default: throw InvalidLine();
+                    }
+                }
+                if (!hasMenu) throw InvalidLine();
+                return config;
+            }
+        }
+
+        private static int CountUnresolvedRules(PartSlot slot)
+        {
+            int count = 0;
+            if (slot.UseBlendshapes)
+                count += slot.Blendshapes.Count(rule => rule.Renderer == null ||
+                    rule.Renderer.sharedMesh == null || string.IsNullOrEmpty(rule.ShapeName) ||
+                    rule.Renderer.sharedMesh.GetBlendShapeIndex(rule.ShapeName) < 0);
+            if (slot.UseMaterials)
+                count += slot.Materials.Count(rule => rule.Renderer == null || rule.Replacement == null ||
+                    rule.MaterialIndex < 0 || rule.MaterialIndex >= rule.Renderer.sharedMaterials.Length);
+            return count;
+        }
+
+        private static List<PartSlot> DecodePartConfiguration(PortableConfiguration config, GameObject outfit,
+            List<PartSlot> previous)
+        {
+            var result = CreateDefaultSlots();
+            var byKey = result.ToDictionary(slot => slot.Key);
+            if (config == null || config.Version != 1 || config.Parts == null || config.Presets == null ||
+                config.Parts.Any(part => part == null || part.Key == null || !byKey.ContainsKey(part.Key) ||
+                    part.Targets == null || part.Shapes == null || part.Materials == null ||
+                    part.Shapes.Any(shape => shape == null) || part.Materials.Any(material => material == null)) ||
+                config.Parts.Select(part => part.Key).Distinct().Count() != config.Parts.Count ||
+                config.Presets.Any(preset => preset == null || preset.VisibleKeys == null))
+                throw new InvalidOperationException("文件不是有效的分件配置。");
+
+            foreach (var part in config.Parts)
+            {
+                var slot = byKey[part.Key];
+                slot.MenuName = part.Name;
+                var existing = previous.FirstOrDefault(old => old.Key == slot.Key);
+                if (existing != null)
+                {
+                    slot.Icon = existing.Icon;
+                    slot.IconConfigured = existing.IconConfigured;
+                    slot.IconGenerated = existing.IconGenerated;
+                    slot.IconSourceKnown = existing.IconSourceKnown;
+                }
+                foreach (string path in part.Targets)
+                {
+                    var target = string.IsNullOrEmpty(path) ? null : FindUniquePath(outfit.transform, path);
+                    if (target == null) slot.MissingTargets.Add(path ?? "");
+                    else if (!slot.Targets.Contains(target.gameObject)) slot.Targets.Add(target.gameObject);
+                }
+                slot.UseBlendshapes = part.UseShapes;
+                slot.BlendshapesInverted = part.InvertShapes;
+                slot.UseMaterials = part.UseMaterials;
+                slot.MaterialsInverted = part.InvertMaterials;
+                slot.AdvancedExpanded = part.UseShapes || part.UseMaterials;
+                foreach (var shape in part.Shapes)
+                    slot.Blendshapes.Add(new BlendshapeRule
+                    {
+                        Renderer = ResolveObject(outfit, shape.Target)?.GetComponent<SkinnedMeshRenderer>(),
+                        ShapeName = shape.Name, Value = shape.Value, ImportedTarget = shape.Target
+                    });
+                foreach (var material in part.Materials)
+                    slot.Materials.Add(new MaterialRule
+                    {
+                        Renderer = ResolveObject(outfit, material.Target)?.GetComponent<Renderer>(),
+                        MaterialIndex = material.Index, ImportedTarget = material.Target,
+                        ImportedMaterialName = material.AssetName, ImportedMaterialGuid = material.Guid,
+                        ImportedMaterialId = material.LocalId, Replacement = ResolveMaterial(material)
+                    });
+            }
+            return result;
+        }
+
+        private PortableObject DescribeObject(Component component, Transform avatar, PortableObject previous)
+        {
+            if (component == null) return previous;
+            bool inOutfit = component.transform.IsChildOf(clothingRoot.transform);
+            return new PortableObject { AvatarRelative = !inOutfit,
+                Path = AnimationUtility.CalculateTransformPath(component.transform, inOutfit ? clothingRoot.transform : avatar) };
+        }
+
+        private static Transform ResolveObject(GameObject outfit, PortableObject target) =>
+            target == null ? null : FindUniquePath(target.AvatarRelative ? outfit.transform.parent : outfit.transform, target.Path);
+
+        private static PortableObject DescribeMissingObject(GameObject outfit, AvatarObjectReference reference)
+        {
+            string path = reference?.referencePath;
+            if (string.IsNullOrEmpty(path)) return null;
+            string prefix = outfit.name + "/";
+            bool inOutfit = path.StartsWith(prefix, StringComparison.Ordinal);
+            return new PortableObject { AvatarRelative = !inOutfit, Path = inOutfit ? path.Substring(prefix.Length) : path };
+        }
+
+        private static Transform FindUniquePath(Transform root, string path)
+        {
+            if (root == null || path == null) return null;
+            if (path.Length == 0) return root;
+            foreach (string name in path.Split('/'))
+            {
+                if (name.Length == 0) return null;
+                Transform match = null;
+                foreach (Transform child in root)
+                {
+                    if (child.name != name) continue;
+                    if (match != null) return null;
+                    match = child;
+                }
+                if (match == null) return null;
+                root = match;
+            }
+            return root;
+        }
+
+        private static Material ResolveMaterial(PortableMaterial reference)
+        {
+            if (string.IsNullOrEmpty(reference.Guid)) return null;
+            string path = AssetDatabase.GUIDToAssetPath(reference.Guid);
+            if (string.IsNullOrEmpty(path)) return null;
+            return AssetDatabase.LoadAllAssetsAtPath(path).OfType<Material>().FirstOrDefault(material =>
+                AssetDatabase.TryGetGUIDAndLocalFileIdentifier(material, out string guid, out long id) &&
+                guid == reference.Guid && id == reference.LocalId);
+        }
+
+        [Serializable] private sealed class PortableConfiguration
+        {
+            public int Version;
+            public string MenuName;
+            public bool ReserveSwitch, BatchControl;
+            public List<WardrobePartPreset> Presets;
+            public List<PortablePart> Parts;
+            public List<string> PartOrder;
+        }
+        [Serializable] private sealed class PortablePart
+        {
+            public string Key, Name;
+            public bool UseShapes, InvertShapes, UseMaterials, InvertMaterials;
+            public List<string> Targets;
+            public List<PortableShape> Shapes;
+            public List<PortableMaterial> Materials;
+        }
+        [Serializable] private sealed class PortableObject
+        {
+            public bool AvatarRelative;
+            public string Path;
+        }
+        [Serializable] private sealed class PortableShape
+        {
+            public PortableObject Target;
+            public string Name;
+            public float Value;
+        }
+        [Serializable] private sealed class PortableMaterial
+        {
+            public PortableObject Target;
+            public int Index;
+            public string Guid, AssetName;
+            public long LocalId;
         }
 
         private bool ValidateAdvanced(PartSlot slot, VRCAvatarDescriptor avatar)
@@ -1919,7 +2515,7 @@ namespace Zincat.Clothing.Editor
                 return false;
             }
             var skipped = new Dictionary<string, string>();
-            if (!TryReadMenuCore(candidate, outfit, out var restored, out var reason, skipped))
+            if (!TryReadMenuCore(candidate, outfit, out var restored, out var reason, skipped, repairMissingParts))
             {
                 if (notify) Notify("无法读取菜单", reason, "确定");
                 else ShowNotification(new GUIContent("找到菜单，但结构不符合本工具格式，未自动读取"));
@@ -1933,6 +2529,7 @@ namespace Zincat.Clothing.Editor
             loadedMenuRoot = candidate;
             reserveOutfitSwitch = candidate.GetComponent<WardrobeGeneratedMenu>()?.OutfitSwitchNode != null;
             var batchMarker = candidate.GetComponent<WardrobeGeneratedMenu>();
+            partOrder = batchMarker?.PartOrder;
             // 未配置过此功能的旧菜单也默认开启；已明确关闭并保存的菜单保留关闭设置。
             enableBatchControl = batchMarker?.BatchControlNode != null ||
                 string.IsNullOrEmpty(batchMarker?.PartParameterPrefix);
@@ -1959,7 +2556,7 @@ namespace Zincat.Clothing.Editor
         }
 
         private static bool TryReadMenuCore(GameObject menuRoot, GameObject outfit,
-            out List<PartSlot> restored, out string reason, Dictionary<string, string> skipped)
+            out List<PartSlot> restored, out string reason, Dictionary<string, string> skipped, bool repair = false)
         {
             restored = CreateDefaultSlots();
             reason = "菜单不是此工具可安全读取的格式。";
@@ -2024,7 +2621,8 @@ namespace Zincat.Clothing.Editor
             bool hasSwitch = marker != null && marker.OutfitSwitchNode != null;
             if (!hasSwitch && marker != null && !string.IsNullOrEmpty(marker.OutfitSwitchGroupParameter))
                 return false;
-            if (children.Count == 0 || children.Count > TotalCount + (hasSwitch ? 1 : 0) + (marker?.BatchControlNode != null ? 1 : 0))
+            if ((children.Count == 0 && marker == null) ||
+                children.Count > TotalCount + (hasSwitch ? 1 : 0) + (marker?.BatchControlNode != null ? 1 : 0))
                 return false;
             if (hasSwitch)
             {
@@ -2077,7 +2675,7 @@ namespace Zincat.Clothing.Editor
                     return false;
                 }
                 var slot = restored[index];
-                if (TryReadPartNode(node, outfit, marker, slot, out var partReason)) continue;
+                if (TryReadPartNode(node, outfit, marker, slot, out var partReason, repair && marker != null)) continue;
                 if (skipped == null) { reason = partReason; return false; }
                 // 只读占位，不将部分解析结果当成可编辑的完整设置。
                 slot = CreateDefaultSlots()[index];
@@ -2090,7 +2688,7 @@ namespace Zincat.Clothing.Editor
         }
 
         private static bool TryReadPartNode(GameObject node, GameObject outfit, WardrobeGeneratedMenu marker,
-            PartSlot slot, out string reason)
+            PartSlot slot, out string reason, bool repair)
         {
                 reason = node.name + " 的菜单或控制组件不符合可编辑格式；原组件保留。";
                 var item = node.GetComponent<ModularAvatarMenuItem>();
@@ -2122,7 +2720,7 @@ namespace Zincat.Clothing.Editor
                     : WardrobePartIconRenderer.IsLegacyGeneratedIcon(slot.Icon);
                 slot.IconSourceKnown = true;
                 var reactions = node.GetComponents<ReactiveComponent>();
-                if (reactions.Length == 0 || reactions.Any(reaction => !reaction.enabled ||
+                if ((reactions.Length == 0 && marker == null) || reactions.Any(reaction => !reaction.enabled ||
                     !(reaction is ModularAvatarObjectToggle) &&
                     !(reaction is ModularAvatarShapeChanger) &&
                     !(reaction is ModularAvatarMaterialSetter)))
@@ -2142,14 +2740,33 @@ namespace Zincat.Clothing.Editor
                 }
 
                 var objects = node.GetComponent<ModularAvatarObjectToggle>();
+                if (marker != null && (reactions.Length == 0 ||
+                    objects != null && !objects.Inverted && (objects.Objects == null || objects.Objects.Count == 0)))
+                    slot.MissingTargets.Add("");
                 if (objects != null)
                 {
-                    if (objects.Inverted || objects.Objects == null || objects.Objects.Count == 0) return false;
-                    foreach (var entry in objects.Objects)
+                    if (objects.Inverted || (marker == null && (objects.Objects == null || objects.Objects.Count == 0)))
+                    {
+                        reason = node.name + " 的物体开关使用了反向条件，或没有可确认的目标配置。";
+                        return false;
+                    }
+                    foreach (var entry in objects.Objects ?? new List<ToggledObject>())
                     {
                         var target = entry.Object?.Get(objects);
-                        if (entry.Active || target == null || target == outfit ||
-                            !target.transform.IsChildOf(outfit.transform)) return false;
+                        bool validTarget = target != null && target != outfit && target.transform.IsChildOf(outfit.transform);
+                        if (marker != null && !entry.Active && !validTarget)
+                        {
+                            string path = entry.Object?.referencePath;
+                            string prefix = outfit.name + "/";
+                            slot.MissingTargets.Add(path != null && path.StartsWith(prefix, StringComparison.Ordinal)
+                                ? path.Substring(prefix.Length) : "");
+                            continue;
+                        }
+                        if (entry.Active || !validTarget)
+                        {
+                            reason = node.name + " 的物体开关存在不支持的启用规则或无效目标。";
+                            return false;
+                        }
                         if (!slot.Targets.Contains(target)) slot.Targets.Add(target);
                     }
                 }
@@ -2169,14 +2786,15 @@ namespace Zincat.Clothing.Editor
                     {
                         var target = entry?.Object?.Get(shapes);
                         var renderer = target == null ? null : target.GetComponent<SkinnedMeshRenderer>();
-                        if (entry == null || entry.ChangeType != ShapeChangeType.Set || renderer == null)
+                        if (entry == null || entry.ChangeType != ShapeChangeType.Set || (renderer == null && !repair))
                         {
                             reason = node.name + "：当前只支持有效的 Set（设置数值）形态键规则，不支持 Delete（删除）；原组件未修改。";
                             return false;
                         }
                         slot.Blendshapes.Add(new BlendshapeRule
                         {
-                            Renderer = renderer, ShapeName = entry.ShapeName, Value = entry.Value
+                            Renderer = renderer, ShapeName = entry.ShapeName, Value = entry.Value,
+                            ImportedTarget = renderer == null ? DescribeMissingObject(outfit, entry.Object) : null
                         });
                     }
                 }
@@ -2193,12 +2811,13 @@ namespace Zincat.Clothing.Editor
                     {
                         var target = entry?.Object?.Get(materials);
                         var renderer = target == null ? null : target.GetComponent<Renderer>();
-                        if (entry == null || renderer == null || entry.Material == null)
+                        if (entry == null || (!repair && (renderer == null || entry.Material == null)))
                             return false;
                         slot.Materials.Add(new MaterialRule
                         {
                             Renderer = renderer, MaterialIndex = entry.MaterialIndex,
-                            Replacement = entry.Material
+                            Replacement = entry.Material,
+                            ImportedTarget = renderer == null ? DescribeMissingObject(outfit, entry.Object) : null
                         });
                     }
                 }
@@ -2262,6 +2881,7 @@ namespace Zincat.Clothing.Editor
             if (draft != null && (draft.Unsaved || string.IsNullOrEmpty(draft.ConfigurationSignature) || !TryRestoreMenu(candidate, false)))
             {
                 slots = JsonUtility.FromJson<ClothingDraft>(JsonUtility.ToJson(draft)).Slots;
+                partOrder = draft.PartOrder;
                 clothingMenuName = draft.MenuName;
                 reserveOutfitSwitch = draft.ReserveSwitch;
                 enableBatchControl = draft.BatchControl;
@@ -2298,7 +2918,7 @@ namespace Zincat.Clothing.Editor
             drafts.RemoveAll(entry => entry.Root == null || entry.Root == clothingRoot);
             var draft = new ClothingDraft { Root = clothingRoot, MenuName = clothingMenuName,
                 ReserveSwitch = reserveOutfitSwitch, Slots = slots,
-                BatchControl = enableBatchControl, Presets = partPresets,
+                BatchControl = enableBatchControl, Presets = partPresets, PartOrder = partOrder,
                 Unsaved = HasUnsavedConfiguration(), ConfigurationSignature = loadedConfigurationSignature,
                 NamingSignature = loadedNamingSignature, SceneSnapshot = loadedSceneSnapshot, SceneSignature = loadedSceneSignature };
             drafts.Add(JsonUtility.FromJson<ClothingDraft>(JsonUtility.ToJson(draft)));
@@ -2313,6 +2933,7 @@ namespace Zincat.Clothing.Editor
             public List<PartSlot> Slots;
             public bool BatchControl;
             public List<WardrobePartPreset> Presets;
+            public List<string> PartOrder;
         }
 
         [Serializable]
@@ -2462,6 +3083,8 @@ namespace Zincat.Clothing.Editor
             var text = new StringBuilder();
             text.Append(data.Root == null ? 0 : data.Root.GetInstanceID()).Append('|')
                 .Append(data.MenuName).Append('|').Append(data.ReserveSwitch).Append('|').Append(data.BatchControl);
+            if (data.PartOrder != null && data.PartOrder.Count > 0)
+                text.Append("|order:").Append(string.Join(",", data.PartOrder));
             foreach (var preset in data.Presets)
                 text.Append('|').Append(preset.Name).Append(':').Append(string.Join(",", preset.VisibleKeys));
             foreach (var slot in data.Slots)
@@ -2471,6 +3094,7 @@ namespace Zincat.Clothing.Editor
                 text.Append(slot.IconTransparentCompatibility).Append(':');
                 foreach (var target in slot.Targets)
                     text.Append(target == null ? 0 : target.GetInstanceID()).Append(',');
+                foreach (var missing in slot.MissingTargets) text.Append('?').Append(missing).Append(',');
                 text.Append(':').Append(slot.UseBlendshapes).Append(':').Append(slot.BlendshapesInverted).Append(':');
                 foreach (var rule in slot.Blendshapes)
                     text.Append(rule.Renderer == null ? 0 : rule.Renderer.GetInstanceID())
@@ -2548,8 +3172,28 @@ namespace Zincat.Clothing.Editor
                 clothingMenuName = "-" + clothingRoot.name;
             }
 
-            var used = slots.Where(IsUsed).ToList();
-            if (used.Count == 0 && !reserveOutfitSwitch) return false;
+            // Work on copies of the affected slots until the scene update succeeds.
+            int skippedMissing = slots.Sum(slot => slot.MissingTargets.Count);
+            var updatedSlots = slots.Select(slot =>
+            {
+                if (slot.MissingTargets.Count == 0) return slot;
+                var cleaned = CopyPart(slot);
+                cleaned.MissingTargets.Clear();
+                return cleaned;
+            }).ToList();
+            var used = OrderedParts(updatedSlots, partOrder).Where(IsUsed).ToList();
+            if (used.Count == 0 && !reserveOutfitSwitch)
+            {
+                if (skippedMissing == 0) return false;
+                if (FindMenuCandidate(clothingRoot) == null && FindMarkedMenus(clothingRoot).Count == 0)
+                {
+                    Undo.RecordObject(this, "清理未补绑的分件");
+                    slots = updatedSlots;
+                    RefreshAll();
+                    Notify("无可生成的分件", "已清理 " + skippedMissing + " 个未补绑的物体引用。");
+                    return true;
+                }
+            }
             if (enableBatchControl)
             {
                 var presetNames = new HashSet<string> { "全部显示", "全部隐藏", "显示全部分件", "隐藏全部分件" };
@@ -2630,6 +3274,7 @@ namespace Zincat.Clothing.Editor
             {
                 clothingMenuName = GameObjectUtility.GetUniqueNameForSibling(menuParent, clothingMenuName);
             }
+            var repairedKeys = new HashSet<string>();
             if (existingMenu != null)
             {
                 if (PrefabUtility.IsPartOfPrefabInstance(existingMenu) &&
@@ -2638,10 +3283,22 @@ namespace Zincat.Clothing.Editor
                     Notify("不更新 Prefab 菜单", "已有菜单是 预制体原有对象，自动替换可能影响 Prefab 结构，请先手动处理。", "确定");
                     return false;
                 }
-                if (!TryReadGeneratedMenu(existingMenu, clothingRoot, out _, out var readReason))
+                if (!TryReadMenuCore(existingMenu, clothingRoot, out var oldSlots, out var readReason, null, repairMissingParts))
                 {
                     Notify("无法安全更新", readReason + " 未覆盖现有组件，请检查后重新读取。", "确定");
                     return false;
+                }
+                foreach (var old in oldSlots.Where(slot => slot.MissingTargets.Count > 0 ||
+                    slot.Blendshapes.Any(rule => rule.Renderer == null) ||
+                    slot.Materials.Any(rule => rule.Renderer == null || rule.Replacement == null)))
+                {
+                    var draft = slots.First(slot => slot.Key == old.Key);
+                    if (!string.IsNullOrEmpty(draft.ExternalReadOnlyReason))
+                    {
+                        Notify("请重新读取菜单", "「" + old.MenuName + "」仍是旧的只读草稿。重新读取后可在原分类补绑。");
+                        return false;
+                    }
+                    repairedKeys.Add(old.Key);
                 }
                 var previousSwitchMarker = existingMenu.GetComponent<WardrobeGeneratedMenu>();
                 if (!reserveOutfitSwitch && previousSwitchMarker != null &&
@@ -2696,6 +3353,7 @@ namespace Zincat.Clothing.Editor
                     !string.IsNullOrEmpty(previousMarkerForSwitch.PartParameterPrefix)
                     ? previousMarkerForSwitch.PartParameterPrefix : "ZincatParts_" + Guid.NewGuid().ToString("N") + "_";
                 marker.PartPresets = ClonePresets(partPresets);
+                marker.PartOrder = partOrder == null ? new List<string>() : new List<string>(partOrder);
                 var submenu = Undo.AddComponent<ModularAvatarMenuItem>(root);
                 Undo.RecordObject(submenu, "配置衣柜主菜单");
                 submenu.MenuSource = SubmenuSource.Children;
@@ -2859,7 +3517,7 @@ namespace Zincat.Clothing.Editor
                     foreach (var group in installTargetLinks.Select(link => link.Group)
                                  .Concat(collection == null ? Array.Empty<WardrobeGeneratedSwitch>() : new[] { collection }).Distinct())
                         Undo.RegisterCompleteObjectUndo(group, "保留换衣菜单关联");
-                    root = CommitMenuUpdate(existingMenu, root);
+                    root = CommitMenuUpdate(existingMenu, root, repairedKeys);
                     marker = root.GetComponent<WardrobeGeneratedMenu>();
                     if (installTargetLinks.Count == 1)
                     {
@@ -2891,6 +3549,11 @@ namespace Zincat.Clothing.Editor
                 }
 
                 EditorSceneManager.MarkSceneDirty(avatar.gameObject.scene);
+                if (skippedMissing > 0)
+                {
+                    Undo.RegisterCompleteObjectUndo(this, "清理未补绑的分件");
+                    slots = updatedSlots;
+                }
                 loadedMenuRoot = root;
                 foreach (var link in root.GetComponent<WardrobeGeneratedMenu>().Slots)
                 {
@@ -2911,7 +3574,8 @@ namespace Zincat.Clothing.Editor
                 WardrobeDiagnostics.Record("分件", "生成或更新", "成功");
                 if (!previewConfirmed && !suppressSuccess)
                     Notify("完成", "已生成 " + used.Count + " 个 MA 分件菜单项，跳过 " +
-                        (TotalCount - used.Count) + " 个空位。原衣服层级和动画未修改。", "确定");
+                        (TotalCount - used.Count) + " 个空位。" +
+                        (skippedMissing > 0 ? "已清理 " + skippedMissing + " 个未补绑的物体引用。" : ""), "确定");
                 return true;
             }
             catch (Exception error)
@@ -2970,7 +3634,7 @@ namespace Zincat.Clothing.Editor
             }
         }
 
-        private static GameObject CommitMenuUpdate(GameObject existing, GameObject staged)
+        private static GameObject CommitMenuUpdate(GameObject existing, GameObject staged, HashSet<string> repairedKeys)
         {
             var oldOwned = OwnedMenuNodes(existing);
             var newOwned = OwnedMenuNodes(staged);
@@ -2982,8 +3646,31 @@ namespace Zincat.Clothing.Editor
             Undo.RegisterCompleteObjectUndo(marker, "更新衣柜菜单关联");
             var replacements = new Dictionary<UnityEngine.Object, UnityEngine.Object>();
             var removedObjects = new HashSet<UnityEngine.Object>();
+            var retained = new Dictionary<GameObject, GameObject>();
+            var sourceMarker = staged.GetComponent<WardrobeGeneratedMenu>();
             foreach (var pair in oldOwned)
             {
+                if (pair.Key.StartsWith("part:", StringComparison.Ordinal) &&
+                    repairedKeys.Contains(pair.Key.Substring(5)) && newOwned.TryGetValue(pair.Key, out var stagedPart))
+                {
+                    var original = pair.Value;
+                    retained.Add(stagedPart, original);
+                    foreach (var component in original.GetComponents<Component>())
+                        if (!(component is Transform) && stagedPart.GetComponent(component.GetType()) == null)
+                            removedObjects.Add(component);
+                    foreach (var component in stagedPart.GetComponents<Component>())
+                    {
+                        if (component is Transform) continue;
+                        var destination = original.GetComponent(component.GetType()) ??
+                            Undo.AddComponent(original, component.GetType());
+                        Undo.RegisterCompleteObjectUndo(destination, "修复原分件组件");
+                        EditorUtility.CopySerialized(component, destination);
+                    }
+                    Undo.RecordObject(original, "修复原分件菜单");
+                    original.name = stagedPart.name;
+                    sourceMarker.Slots.First(link => link.MenuNode == stagedPart).MenuNode = original;
+                    continue;
+                }
                 foreach (var component in pair.Value.GetComponentsInChildren<Component>(true))
                     if (component != null) { removedObjects.Add(component); removedObjects.Add(component.gameObject); }
                 if (newOwned.TryGetValue(pair.Key, out var replacement))
@@ -3012,9 +3699,14 @@ namespace Zincat.Clothing.Editor
                     if (changed) { serialized.ApplyModifiedProperties(); EditorUtility.SetDirty(component); }
                 }
 
-            var newChildren = staged.transform.Cast<Transform>().Select(t => t.gameObject).ToArray();
-            foreach (var node in oldOwned.Values) Undo.DestroyObjectImmediate(node);
-            foreach (var node in newChildren)
+            var stagedChildren = staged.transform.Cast<Transform>().Select(t => t.gameObject).ToArray();
+            var newChildren = stagedChildren.Select(node => retained.TryGetValue(node, out var original) ? original : node).ToArray();
+            var retainedNodes = new HashSet<GameObject>(retained.Values);
+            foreach (var node in oldOwned.Values)
+                if (!retainedNodes.Contains(node)) Undo.DestroyObjectImmediate(node);
+            foreach (var component in removedObjects.OfType<Component>().ToArray())
+                if (component != null && retainedNodes.Contains(component.gameObject)) Undo.DestroyObjectImmediate(component);
+            foreach (var node in stagedChildren.Where(node => !retained.ContainsKey(node)))
             {
                 Undo.SetTransformParent(node.transform, existing.transform, "更新生成的菜单项");
                 Undo.RecordObject(node.transform, "保留菜单项局部位置");
@@ -3032,9 +3724,9 @@ namespace Zincat.Clothing.Editor
             foreach (var node in order) Undo.RecordObject(node.transform, "保留菜单顺序");
             for (int i = 0; i < order.Count; i++) order[i].transform.SetSiblingIndex(i);
 
-            var sourceMarker = staged.GetComponent<WardrobeGeneratedMenu>();
             marker.ClothingRoot = sourceMarker.ClothingRoot;
             marker.Slots = sourceMarker.Slots;
+            marker.PartOrder = sourceMarker.PartOrder;
             marker.OutfitSwitchNode = sourceMarker.OutfitSwitchNode;
             marker.OutfitSwitchGroupParameter = sourceMarker.OutfitSwitchGroupParameter;
             marker.PartParameterPrefix = sourceMarker.PartParameterPrefix;
@@ -3104,6 +3796,7 @@ namespace Zincat.Clothing.Editor
             {
                 var slot = slots[i];
                 if (slot.Targets == null) slot.Targets = new List<GameObject>();
+                if (slot.MissingTargets == null) slot.MissingTargets = new List<string>();
                 if (slot.Blendshapes == null) slot.Blendshapes = new List<BlendshapeRule>();
                 if (slot.Materials == null) slot.Materials = new List<MaterialRule>();
                 if (!slot.IconSourceKnown)
@@ -3138,6 +3831,7 @@ namespace Zincat.Clothing.Editor
         private void ResetSlots()
         {
             slots = CreateDefaultSlots();
+            partOrder = null;
             showBackups = false;
         }
 
@@ -3197,6 +3891,7 @@ namespace Zincat.Clothing.Editor
             public bool IconAnglesInitialized;
             public int IconViewVersion;
             public List<GameObject> Targets = new List<GameObject>();
+            public List<string> MissingTargets = new List<string>();
             public bool AdvancedExpanded;
             public bool UseBlendshapes;
             public bool UseMaterials;
@@ -3211,6 +3906,7 @@ namespace Zincat.Clothing.Editor
         private sealed class BlendshapeRule
         {
             public SkinnedMeshRenderer Renderer;
+            public PortableObject ImportedTarget;
             public string ShapeName;
             public float Value;
         }
@@ -3219,6 +3915,9 @@ namespace Zincat.Clothing.Editor
         private sealed class MaterialRule
         {
             public Renderer Renderer;
+            public PortableObject ImportedTarget;
+            public string ImportedMaterialName, ImportedMaterialGuid;
+            public long ImportedMaterialId;
             public int MaterialIndex;
             public Material Replacement;
         }

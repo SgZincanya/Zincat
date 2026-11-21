@@ -19,6 +19,7 @@ namespace Zincat.Clothing
         public Texture2D GeneratedOutfitIcon;
         public Texture2D GeneratedWearIcon;
         public List<WardrobeSlotLink> Slots = new List<WardrobeSlotLink>();
+        public List<string> PartOrder = new List<string>();
         public GameObject OutfitSwitchNode;
         public string OutfitSwitchGroupParameter;
         public string PartParameterPrefix;

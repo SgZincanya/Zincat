@@ -1,5 +1,12 @@
 # Changes
 
+## 2.12.0
+
+- Add wardrobe configuration copy/paste and TXT import/export.
+- Add configurable generated menu order and persist it with wardrobe settings.
+- Improve handling of missing part targets and advanced rules when reading, transferring and repairing menus.
+- Preserve existing part objects when repairing their generated components.
+
 ## 2.11.3
 
 - Refine wardrobe part cards into a compact 176 px layout.
