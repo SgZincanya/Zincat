@@ -1,4 +1,4 @@
-﻿#if UNITY_EDITOR
+#if UNITY_EDITOR
 using System;
 using System.IO;
 using System.Linq;
@@ -20,13 +20,20 @@ namespace Zincat.AvatarSplitTest
  [Serializable] internal sealed class CauExtraProfile
  {
   public string settingGuid,groupId,sourceKey,displayName,desiredName,imageGuid,imagePath,imageHash,expectedId,sourceId,avatarObjectId;
+  public CauModelBaseline baseline;
+  public CauQueueItem queueItem;
  }
  internal enum CauExtraStatus { AwaitingModel,Pending,Running,Done,Failed,Skipped }
  [Serializable] internal sealed class CauExtraJob
  {
   public string token,batch,settingGuid,displayName,desiredName,imagePath,imageHash,imageGuid,expectedId,sourceId,avatarId,userId,error,avatarObjectId;
-  public bool modelSucceeded,metadataOnly,preserveName;
+  public bool modelSucceeded,metadataOnly,preserveName,localMismatch;
   public string sourceKey,groupId;
+  public CauModelBaseline baseline;
+  public CauQueueItem queueItem;
+  public CauVerificationStatus verification;
+  public string verificationMessage,uploadPlatform,startedAt,checkedAt,appliedImageUrl;
+  public int remoteVersion;
   public CauExtraStatus status;
  }
  [Serializable] internal sealed class CauExtraState
@@ -34,7 +41,7 @@ namespace Zincat.AvatarSplitTest
   public List<CauExtraProfile> profiles=new List<CauExtraProfile>();
   public List<CauExtraJob> jobs=new List<CauExtraJob>();
  }
- internal sealed class CauExtraRemote {public string id,authorId,name;public bool pendingUpload;public object native;}
+ internal sealed class CauExtraRemote {public string id,authorId,name,assetUrl,imageUrl;public int version;public bool pendingUpload;public object native;}
  internal interface ICauExtraBackend
  {
   string UserId{get;}
@@ -75,7 +82,7 @@ namespace Zincat.AvatarSplitTest
    if(!job.preserveName&&string.IsNullOrWhiteSpace(job.desiredName))throw new InvalidOperationException("上传名称为空，请重新交接。");
    string image=Snapshot(job);
    var remote=await api.Read(job.avatarId,token);Ownership(job,remote,user);if(api.UserId!=user)throw new InvalidOperationException("登录账号已切换，请重试。");token.ThrowIfCancellationRequested();
-   if(image!=null){remote=await api.Image(remote,image,token);Ownership(job,remote,user);if(api.UserId!=user)throw new InvalidOperationException("登录账号已切换，请重试。");}
+   if(image!=null){remote=await api.Image(remote,image,token);job.appliedImageUrl=remote?.imageUrl;Ownership(job,remote,user);if(api.UserId!=user)throw new InvalidOperationException("登录账号已切换，请重试。");}
    if(!job.preserveName)
    {
     // After uploading an image, fetch current metadata before changing its name.
@@ -83,12 +90,16 @@ namespace Zincat.AvatarSplitTest
     Ownership(job,remote,user);if(api.UserId!=user)throw new InvalidOperationException("登录账号已切换，请重试。");token.ThrowIfCancellationRequested();
     if(remote.name!=job.desiredName.Trim())await api.Rename(remote,job.desiredName.Trim(),token);
    }
+   var confirmed=await api.Read(job.avatarId,token);Ownership(job,confirmed,user);
+   if(api.UserId!=user)throw new InvalidOperationException("登录账号已切换，请重试。");
+   if(!job.preserveName&&confirmed.name!=job.desiredName.Trim())throw new InvalidOperationException("名称服务器回读不一致，请稍后重试同步。");
+   if(image!=null&&(string.IsNullOrEmpty(job.appliedImageUrl)||confirmed.imageUrl!=job.appliedImageUrl))throw new InvalidOperationException("封面服务器回读未确认，请稍后重试同步。");
   }
  }
  internal sealed class CauSdkExtraBackend:ICauExtraBackend
  {
   public string UserId=>APIUser.CurrentUser?.id;
-  static CauExtraRemote Wrap(VRCAvatar avatar)=>new CauExtraRemote{id=avatar.ID,authorId=avatar.AuthorId,name=avatar.Name,pendingUpload=avatar.PendingUpload,native=avatar};
+  static CauExtraRemote Wrap(VRCAvatar avatar)=>new CauExtraRemote{id=avatar.ID,authorId=avatar.AuthorId,name=avatar.Name,pendingUpload=avatar.PendingUpload,assetUrl=avatar.GetLatestAssetUrlForPlatform("standalonewindows"),imageUrl=avatar.ImageUrl,version=avatar.Version,native=avatar};
   public async Task<CauExtraRemote> Read(string id,CancellationToken token)=>Wrap(await VRCApi.GetAvatar(id,forceRefresh:true,cancellationToken:token));
   public async Task<CauExtraRemote> Image(CauExtraRemote avatar,string path,CancellationToken token)=>Wrap(await VRCApi.UpdateAvatarImage(avatar.id,(VRCAvatar)avatar.native,path,cancellationToken:token));
   public async Task<CauExtraRemote> Rename(CauExtraRemote avatar,string name,CancellationToken token)
@@ -131,7 +142,7 @@ namespace Zincat.AvatarSplitTest
   static string GuidOf(object value)=>value is Object obj?AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(obj)):"";
   static string Batch(object progress)=>GuidOf(progress);
   static string Token(object progress,object setting)=>Batch(progress)+":"+GuidOf(setting)+":"+Field(progress,"uploadingTargetPlatform");
-  static void ReplaceLocalFile(string temp,string target)
+  internal static void ReplaceLocalFile(string temp,string target)
   {
    for(int attempt=0;;attempt++)
    {
@@ -139,7 +150,8 @@ namespace Zincat.AvatarSplitTest
     catch(IOException) when(attempt<5){Thread.Sleep(15*(1<<attempt));}
    }
   }
-  static void Save()
+  internal static bool HasJournal=>cache!=null||File.Exists(Journal);
+  internal static void Save()
   {
    Directory.CreateDirectory(Path.GetDirectoryName(Journal));string temp=Journal+"."+Guid.NewGuid().ToString("N")+".tmp";
    try{File.WriteAllText(temp,JsonUtility.ToJson(State,true));ReplaceLocalFile(temp,Journal);Version++;}
@@ -182,6 +194,8 @@ namespace Zincat.AvatarSplitTest
    profile.avatarObjectId=SplitIds.Of(avatarDescriptor);
    var source=SplitIds.Resolve(plan.sourceId) as GameObject;profile.sourceId=source?source.GetComponent<PipelineManager>()?.blueprintId:"";
    if(cover){profile.imageGuid=AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(cover));profile.imageHash=group.photoCoverHash;profile.imagePath=FreezeImage(cover,profile.imageHash);}
+   profile.queueItem=CauQueueItem.Capture(plan,group);
+   CauUploadVerification.Bind(profile);
    State.profiles.RemoveAll(p=>p.settingGuid==profile.settingGuid);State.profiles.Add(profile);Save();
   }
   static string FreezeImage(Texture2D cover,string expectedHash)
@@ -248,7 +262,11 @@ namespace Zincat.AvatarSplitTest
    var profile=State.profiles.FirstOrDefault(p=>p.settingGuid==GuidOf(setting));if(profile==null)return;
    string token=Token(progress,setting);if(State.jobs.Any(j=>j.token==token))return;
    State.jobs.Add(new CauExtraJob{token=token,batch=Batch(progress),settingGuid=profile.settingGuid,displayName=profile.displayName,desiredName=profile.desiredName,
-    sourceKey=profile.sourceKey,groupId=profile.groupId,imagePath=profile.imagePath,imageHash=profile.imageHash,imageGuid=profile.imageGuid,expectedId=profile.expectedId,sourceId=profile.sourceId,avatarObjectId=profile.avatarObjectId,userId=APIUser.CurrentUser?.id,status=CauExtraStatus.AwaitingModel});Save();
+    sourceKey=profile.sourceKey,groupId=profile.groupId,imagePath=profile.imagePath,imageHash=profile.imageHash,imageGuid=profile.imageGuid,expectedId=profile.expectedId,sourceId=profile.sourceId,avatarObjectId=profile.avatarObjectId,userId=APIUser.CurrentUser?.id,status=CauExtraStatus.AwaitingModel});
+   var startedJob=State.jobs.Last();startedJob.queueItem=profile.queueItem;
+   CauUploadVerification.Started(startedJob,profile,Field(progress,"uploadingTargetPlatform")?.ToString());
+   if(profile.queueItem!=null)try{profile.queueItem.Validate();}catch(Exception e){startedJob.localMismatch=true;startedJob.error="交接后模型配置发生变化："+e.Message;}
+   Save();
   }
   static bool HasError(object progress,object setting)
   {
@@ -258,19 +276,23 @@ namespace Zincat.AvatarSplitTest
   static void Finished(object progress,object setting)
   {
    var job=State.jobs.FirstOrDefault(j=>j.token==Token(progress,setting));if(job==null)return;
-   if(HasError(progress,setting)){job.status=CauExtraStatus.Failed;job.error="模型上传有错误，未同步封面与名称。";Save();return;}
+   if(job.localMismatch){job.status=CauExtraStatus.Failed;CauUploadVerification.ModelFailed(job);Save();return;}
+   if(HasError(progress,setting)){job.status=CauExtraStatus.Failed;job.error="模型上传有错误，未同步封面与名称。";CauUploadVerification.ModelFailed(job);Save();return;}
    var reference=Field(setting,"avatarDescriptor");
    var descriptor=reference?.GetType().GetMethod("TryResolve",Flags)?.Invoke(reference,null) as VRCAvatarDescriptor;
    if(!descriptor||string.IsNullOrEmpty(job.avatarObjectId)||SplitIds.Of(descriptor)!=job.avatarObjectId)
-   {job.status=CauExtraStatus.Failed;job.error="CAU 绑定模型已变化，请从拆分窗口重新交接。";Save();return;}
+   {job.status=CauExtraStatus.Failed;job.error="CAU 绑定模型已变化，请从拆分窗口重新交接。";CauUploadVerification.ModelFailed(job);Save();return;}
    string id=descriptor.GetComponent<PipelineManager>()?.blueprintId;
-   if(string.IsNullOrEmpty(id)){job.status=CauExtraStatus.Failed;job.error="无法确认上传结果的蓝图号，未同步。";Save();return;}
+   if(string.IsNullOrEmpty(id)){job.status=CauExtraStatus.Failed;job.error="无法确认上传结果的蓝图号，未同步。";CauUploadVerification.ModelFailed(job);Save();return;}
+   if((!string.IsNullOrEmpty(job.expectedId)&&id!=job.expectedId)||(job.sourceId==id&&job.expectedId!=id))
+   {job.status=CauExtraStatus.Failed;job.error="上传结果蓝图与交接记录不一致。";CauUploadVerification.ModelFailed(job);Save();return;}
+   if(job.queueItem!=null)try{job.queueItem.Validate(id);}catch(Exception e){job.status=CauExtraStatus.Failed;job.error="上传期间配置发生变化："+e.Message;CauUploadVerification.ModelFailed(job);Save();return;}
    job.avatarId=id;job.modelSucceeded=true;job.status=CauExtraStatus.Pending;job.error="";Save();
   }
   static void BatchFinished(object progress,object success)
   {
    foreach(var job in State.jobs.Where(j=>j.batch==Batch(progress)&&j.status==CauExtraStatus.AwaitingModel))
-   {job.status=CauExtraStatus.Failed;job.error="CAU 未确认此模型上传成功，请完成模型上传后重试。";}
+   {job.status=CauExtraStatus.Failed;job.error="CAU 未确认此模型上传成功，请完成模型上传后重试。";CauUploadVerification.ModelFailed(job);}
    Save();
   }
   static void Tick()

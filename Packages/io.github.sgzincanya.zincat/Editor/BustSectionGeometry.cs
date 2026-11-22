@@ -7,12 +7,14 @@ namespace Zincat.AvatarMeasurement
     {
         public readonly Vector3[] Loop;
         public readonly float Length;
+        public readonly bool IsEstimated;
         public bool IsValid => Loop != null;
 
-        public Section(Vector3[] loop, float length)
+        public Section(Vector3[] loop, float length, bool isEstimated)
         {
             Loop = loop;
             Length = length;
+            IsEstimated = isEstimated;
         }
     }
 
@@ -42,7 +44,8 @@ namespace Zincat.AvatarMeasurement
             }
         }
 
-        public static Section Measure(Vector3[] vertices, int[] triangles, Vector3 pivot, float tilt, float tolerance, bool includeChest)
+        public static Section Measure(Vector3[] vertices, int[] triangles, Vector3 pivot, float tilt, float tolerance,
+            float bodyHeight, bool includeChest)
         {
             var rotation = Quaternion.AngleAxis(tilt, Vector3.right);
             var inverse = Quaternion.Inverse(rotation);
@@ -70,19 +73,16 @@ namespace Zincat.AvatarMeasurement
                 points[end].Neighbors.Add(start);
             }
 
-            // The weld tolerance is 0.15 mm. Allow up to 3 mm between open seam ends.
+            // Repair ordinary mesh seams first. A heavily deformed mesh may need a wider gap budget.
             CloseSmallGaps(points, tolerance * 20f);
             var contours = FindContours(points);
-            Contour torso = null;
-            float nearest = float.PositiveInfinity;
-            foreach (var contour in contours)
+            var torso = FindTorso(contours, bodyHeight, tolerance);
+            bool isEstimated = torso == null;
+            if (isEstimated && bodyHeight * 0.02f > tolerance * 20f)
             {
-                float outside = Mathf.Max(0f, Mathf.Max(contour.Min.x, -contour.Max.x));
-                outside += Mathf.Max(0f, Mathf.Max(contour.Min.y, -contour.Max.y));
-                float score = outside * 4f + contour.Center.magnitude - contour.Size.x * 0.35f;
-                if (score >= nearest) continue;
-                nearest = score;
-                torso = contour;
+                CloseSmallGaps(points, bodyHeight * 0.02f);
+                contours = FindContours(points);
+                torso = FindTorso(contours, bodyHeight, tolerance);
             }
             if (torso == null) return default;
 
@@ -105,17 +105,39 @@ namespace Zincat.AvatarMeasurement
                 if (i > 0) length += Vector2.Distance(hull[i - 1], hull[i]);
                 loop[i] = pivot + rotation * new Vector3(hull[i].x, 0f, hull[i].y);
             }
-            return new Section(loop, length);
+            return new Section(loop, length, isEstimated);
+        }
+
+        private static Contour FindTorso(List<Contour> contours, float bodyHeight, float tolerance)
+        {
+            Contour torso = null;
+            float bestScore = float.NegativeInfinity;
+            foreach (var contour in contours)
+            {
+                Vector2 size = contour.Size;
+                // A torso loop must cross the centerline and have enough width and depth to enclose the trunk.
+                if (contour.Min.x > tolerance || contour.Max.x < -tolerance) continue;
+                if (size.x < bodyHeight * 0.07f || size.y < bodyHeight * 0.025f) continue;
+
+                // Favor broad loops near the center, with rear support rather than forward-only islands.
+                float depthGap = Mathf.Max(0f, contour.Min.y, -contour.Max.y);
+                float score = size.x + size.y * 0.5f - Mathf.Abs(contour.Center.x) * 2f - depthGap * 4f;
+                if (score <= bestScore) continue;
+                bestScore = score;
+                torso = contour;
+            }
+            return torso;
         }
 
         private static bool IsChest(Contour contour, Contour torso)
         {
             Vector2 offset = contour.Center - torso.Center;
-            return Mathf.Abs(offset.x) <= torso.Size.x * 0.67f
+            float sideGap = Mathf.Max(torso.Min.x - contour.Max.x, contour.Min.x - torso.Max.x);
+            return Mathf.Abs(offset.x) <= torso.Size.x * 0.8f
+                && sideGap <= torso.Size.x * 0.12f
                 && contour.Max.y > torso.Max.y
                 && offset.y > 0f
-                && contour.Min.y <= torso.Max.y + Mathf.Max(torso.Size.y * 0.75f, torso.Size.x * 0.4f)
-                && contour.Size.x <= torso.Size.x * 1.3f;
+                && contour.Min.y <= torso.Max.y + Mathf.Max(torso.Size.y, torso.Size.x) * 0.5f;
         }
 
         private static void CrossEdge(Vector3 a, Vector3 b, Vector2[] crossings, ref int count)

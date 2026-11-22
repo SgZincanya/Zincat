@@ -200,6 +200,8 @@ namespace Zincat.AvatarMeasurement
             EditorGUILayout.LabelField("下胸围", FormatSection(underSection, factor));
             if (!validHeight)
                 EditorGUILayout.HelpBox("换算需要头顶高于足底，且现实身高大于零。", MessageType.Info);
+            if (topSection.IsEstimated || underSection.IsEstimated)
+                GUILayout.Label("带 ≈ 的数值补合了断面缺口，请在 Scene 中核对测量线。", noteStyle);
             if (!topSection.IsValid || !underSection.IsValid || !validHeight) return;
 
             float underCm = underSection.Length * Unit * factor;
@@ -219,7 +221,9 @@ namespace Zincat.AvatarMeasurement
 
         private string FormatSection(Section section, float factor)
         {
-            return section.IsValid ? $"{section.Length * Unit * factor:F1} cm" : "未找到有效断面";
+            if (!section.IsValid) return "未找到躯干断面";
+            string prefix = section.IsEstimated ? "≈ " : string.Empty;
+            return $"{prefix}{section.Length * Unit * factor:F1} cm";
         }
 
         private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
@@ -394,8 +398,8 @@ namespace Zincat.AvatarMeasurement
                 }
                 guideWidth = Mathf.Max(0.12f / Unit, bounds.extents.x * 0.5f);
                 float tolerance = 0.00015f / Unit;
-                topSection = BustSectionGeometry.Measure(vertices, triangles, Pivot(top), topTilt, tolerance, true);
-                underSection = BustSectionGeometry.Measure(vertices, triangles, Pivot(under), underTilt, tolerance, false);
+                topSection = BustSectionGeometry.Measure(vertices, triangles, Pivot(top), topTilt, tolerance, bounds.size.y, true);
+                underSection = BustSectionGeometry.Measure(vertices, triangles, Pivot(under), underTilt, tolerance, bounds.size.y, false);
             }
             Repaint();
             SceneView.RepaintAll();

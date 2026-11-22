@@ -1,4 +1,4 @@
-﻿#if UNITY_EDITOR
+#if UNITY_EDITOR
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -126,7 +126,7 @@ namespace Zincat.AvatarSplitTest
                 EditorSceneManager.SaveScene(scene);
             }
             SplitIds.Save(plan);
-            Debug.Log("[分组拆分测试] " + group.name + (success ? " 上传成功，已保存蓝图号。" : " 上传未完成，已保留分配的蓝图号供重试。"));
+            Debug.Log("[分组拆分测试] " + group.name + (success ? " CAU 已报告完成，已保存蓝图号；服务器核验另行显示。" : " 上传未完成，已保留分配的蓝图号供重试。"));
         }
         public static void SyncBlueprints(AvatarSplitPlan plan, IEnumerable<SplitGroup> groups = null)
         {
@@ -147,17 +147,24 @@ namespace Zincat.AvatarSplitTest
         internal static SplitGroup[] SelectedUploads(AvatarSplitPlan plan) => plan ? plan.groups.Where(g => g.UploadSelected).ToArray() : Array.Empty<SplitGroup>();
         public static void PrepareQueue(AvatarSplitPlan plan)
         {
+            CauBatchQueue.Add(plan);
+            CauBatchQueue.Send(CauBatchQueue.Capture(plan));
+            CauBatchQueueWindow.Open();
+        }
+        internal static bool PrepareQueueCore(CauQueueItem[] entries)
+        {
             if (!Available || Busy || CauExtraUploads.Busy || EditorApplication.isPlayingOrWillChangePlaymode)
                 throw new InvalidOperationException("CAU 未安装、正在上传，或 Unity 正处于运行模式。");
             ValidateApi();
             if (!hooked) throw new InvalidOperationException("当前 CAU 无法连接蓝图保存回调，已停止交接。");
-            var groups = SelectedUploads(plan);
+            CauBatchQueue.Validate(entries);
+            var groups = entries.Select(e => e.Group(e.Plan())).ToArray();
             if (groups.Length == 0) throw new InvalidOperationException("请至少勾选一个要上传的分组。");
             if ((bool)Type("Preferences").GetProperty("TakeThumbnailInPlaymodeByDefault", Fields).GetValue(null))
                 throw new InvalidOperationException("请在 CAU 关闭“默认在运行模式拍摄封面”后再交接；本扩展不会进入运行模式。");
-            SyncBlueprints(plan, groups);
+            var plans = entries.Select(e => e.Plan()).ToArray();
             var avatars = new List<GameObject>();
-            var covers = groups.ToDictionary(g => g.id, g => SplitPhoto.UploadCover(plan, g));
+            var covers = groups.Select((g, i) => SplitPhoto.UploadCover(plans[i], g)).ToArray();
             foreach (var group in groups)
             {
                 var avatar = SplitIds.Avatar(group);
@@ -171,14 +178,14 @@ namespace Zincat.AvatarSplitTest
             if (groups.Where(g => !string.IsNullOrEmpty(g.blueprintId)).GroupBy(g => g.blueprintId).Any(g => g.Count() > 1))
                 throw new InvalidOperationException("分组蓝图号重复，已停止。");
             if (!EditorUtility.DisplayDialog("准备交给 CAU", "仅将勾选的分组按以下顺序加入 CAU（Windows）：\n\n" +
-                string.Join("\n", groups.Select((g, i) => (i + 1) + ". " + g.UploadName + " · " + (string.IsNullOrEmpty(g.blueprintId) ? "新建私有 Avatar" : "更新已有 Avatar") + (covers[g.id] ? " · 已确认封面" : " · 保留原封面"))) +
-                "\n\n这一步只打开上传队列。请检查 CAU，然后亲自点击“开始上传”。", "打开 CAU 队列", "取消")) return;
+                string.Join("\n", groups.Select((g, i) => (i + 1) + ". " + g.UploadName + " · " + (string.IsNullOrEmpty(g.blueprintId) ? "新建私有 Avatar" : "更新已有 Avatar") + (covers[Array.IndexOf(groups, g)] ? " · 已确认封面" : " · 保留原封面"))) +
+                "\n\n这一步只打开上传队列。请检查 CAU，然后亲自点击“开始上传”。", "打开 CAU 队列", "取消")) return false;
             AvatarSplitBuilder.EnsureFolder(AvatarSplitBuilder.Root + "/UploadSettings");
             var settingType = Type("AvatarUploadSetting");
             var settings = Array.CreateInstance(Type("AvatarUploadSettingOrGroup"), avatars.Count);
             for (int i = 0; i < avatars.Count; i++)
             {
-                var g = groups[i];
+                var g = groups[i]; var plan = plans[i];
                 var setting = AssetDatabase.LoadAssetAtPath(AssetDatabase.GUIDToAssetPath(g.cauSettingGuid ?? ""), settingType) as ScriptableObject;
                 if (!setting)
                 {
@@ -197,7 +204,7 @@ namespace Zincat.AvatarSplitTest
                     Set(info, "versioningEnabled", false); Set(info, "gitEnabled", false);
                 }
                 EditorUtility.SetDirty(setting); settings.SetValue(setting, i);
-                CauExtraUploads.Prepare(plan, g, setting, covers[g.id]);
+                CauExtraUploads.Prepare(plan, g, setting, covers[Array.IndexOf(groups, g)]);
             }
             var window = Type("ContinuousAvatarUploader").GetMethod("OpenWindow", Fields).Invoke(null, null) as EditorWindow;
             Set(window, "settingsOrGroups", settings);
@@ -207,7 +214,8 @@ namespace Zincat.AvatarSplitTest
             foreach (string platform in new[] { "Windows", "Android", "iOS" })
                 setPlatform.Invoke(null, new[] { Enum.Parse(targetType, platform), (object)(platform == "Windows") });
             // The final upload action remains in CAU. Never call StartUpload here.
-            window.Show(); window.Repaint(); SplitIds.Save(plan); AssetDatabase.SaveAssets();
+            window.Show(); window.Repaint(); foreach (var plan in plans.Distinct()) SplitIds.Save(plan); AssetDatabase.SaveAssets();
+            return true;
         }
 
         public static void RetargetExistingSettings(AvatarSplitPlan plan)

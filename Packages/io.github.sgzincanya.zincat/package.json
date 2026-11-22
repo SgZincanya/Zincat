@@ -1,14 +1,14 @@
 {
   "name": "io.github.sgzincanya.zincat",
   "displayName": "Zincat",
-  "version": "2.12.0",
+  "version": "2.12.1",
   "unity": "2022.3",
   "description": "Zincat avatar tools: wardrobe, switches, lighting, password lock, avatar splitting, translation and dance previews.",
   "author": {
     "name": "SgZincanya",
     "url": "https://github.com/SgZincanya"
   },
-  "url": "https://github.com/SgZincanya/Zincat/releases/download/v2.12.0/io.github.sgzincanya.zincat-2.12.0.zip",
+  "url": "https://github.com/SgZincanya/Zincat/releases/download/v2.12.1/io.github.sgzincanya.zincat-2.12.1.zip",
   "documentationUrl": "https://github.com/SgZincanya/Zincat#readme",
   "changelogUrl": "https://github.com/SgZincanya/Zincat/releases",
   "vpmDependencies": {
@@ -170,6 +170,9 @@
     "Assets/Zincat/ColorOverview/Editor/ColorOverviewUI.cs": "2f491d75b0e034f42bc24392c2e626e8",
     "Assets/Zincat/ColorOverview/Editor/ColorOverviewWindow.cs": "d6e6434b5123ca845a4cab0ea7bc7afa",
     "Assets/Zincat/Editor/AvatarBustMeasureWindow.cs": "700597dd6561471a91bd489660d42f32",
-    "Assets/Zincat/Editor/BustSectionGeometry.cs": "232b5d263aa9448bb69b687a89dcf8e5"
+    "Assets/Zincat/Editor/BustSectionGeometry.cs": "232b5d263aa9448bb69b687a89dcf8e5",
+    "Assets/Zincat/Zincat兼容/CAU/Editor/CauBatchQueue.cs": "18969fe574cb4b8a878a976ac8ee63b3",
+    "Assets/Zincat/Zincat兼容/CAU/Editor/CauUploadVerification.cs": "0841aa74bc214b2b9895ab4c1e5940de",
+    "Assets/Zincat/Zincat兼容/CAU/上传清单与核验.md": "9fcf4660232d49ad995aec4185bae3da"
   }
 }

@@ -1,5 +1,11 @@
 # Changes
 
+## 2.12.1
+
+- Add a persistent multi-avatar CAU upload checklist and upload result verification.
+- Integrate the checklist with avatar splitting and CAU handoff.
+- Refine bust measurement geometry and its editor controls.
+
 ## 2.12.0
 
 - Add wardrobe configuration copy/paste and TXT import/export.
