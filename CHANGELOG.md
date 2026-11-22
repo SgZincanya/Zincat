@@ -1,5 +1,9 @@
 # Changes
 
+## 2.12.2
+
+- Adjust bust measurement mesh baking to account for inherited renderer scaling in Unity 2022.3.
+
 ## 2.12.1
 
 - Add a persistent multi-avatar CAU upload checklist and upload result verification.

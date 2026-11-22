@@ -327,7 +327,9 @@ namespace Zincat.AvatarMeasurement
             try
             {
                 baked.Clear();
-                body.BakeMesh(baked, false);
+                // On Unity 2022.3 useScale=false can retain inherited scale in the vertices.
+                // Use the renderer-local bake with the full renderer-to-measurement matrix.
+                body.BakeMesh(baked, true);
                 vertices = baked.vertices;
                 triangles = baked.triangles;
                 for (int i = 0; i < vertices.Length; i++)
