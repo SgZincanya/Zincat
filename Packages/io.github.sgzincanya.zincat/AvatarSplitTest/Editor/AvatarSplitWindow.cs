@@ -211,16 +211,15 @@ namespace Zincat.AvatarSplitTest
             }), true);
             generateButton.style.flexGrow = 1; generateButton.style.flexBasis = 180; generateButton.style.height = 34;
             generateButton.tooltip = "在源场景中更新本方案的副本，保留原角色和各组蓝图。";
-            uploadButton = SplitUi.Button("打开 CAU 上传队列…", () => RunLater("正在准备上传队列…", () =>
+            uploadButton = SplitUi.Button("加入上传清单…", () => RunLater("正在加入上传清单…", () =>
             {
-                SplitIds.Flush(); CauBridge.PrepareQueue(plan); DrawGroups(); DrawDetails(); SetNotice("正在准备队列，进度见上传清单；交接不会开始上传。");
+                SplitIds.Flush(); CauBridge.PrepareQueue(plan); DrawGroups(); DrawDetails(); SetNotice("已加入上传清单；可继续添加其他角色，最后统一交给 CAU。");
             }));
             uploadButton.name = "split-upload";
             uploadButton.style.flexGrow = 1; uploadButton.style.flexBasis = 180; uploadButton.style.height = 34;
-            uploadButton.tooltip = "检查并确认队列后打开 CAU；不会立即上传。";
+            uploadButton.tooltip = "只加入上传清单，不打开 CAU；在清单中统一交接。";
             actions.Add(generateButton); actions.Add(uploadButton); root.Add(actions);
             var queueTools = SplitUi.Row(); queueTools.style.flexWrap = Wrap.Wrap; queueTools.style.marginTop = 6;
-            queueTools.Add(SplitUi.Button("加入上传清单", () => Run(() => { CauBatchQueue.Add(plan); CauBatchQueueWindow.Open(); })));
             queueTools.Add(SplitUi.Button("打开上传清单…", CauBatchQueueWindow.Open)); root.Add(queueTools);
             stageLabel = SplitUi.Label("", 12, true); stageLabel.style.marginTop = 6; stageLabel.style.marginBottom = 8; root.Add(stageLabel);
             notice = SplitUi.Label("", 13, true); notice.style.marginBottom = 8; root.Add(notice); SetNotice(statusText);
@@ -333,7 +332,8 @@ namespace Zincat.AvatarSplitTest
                 var job = CauExtraUploads.State.jobs.LastOrDefault(j => !j.metadataOnly && j.sourceKey == SplitConfigStore.Key(plan) && j.groupId == g.id);
                 if (job != null && job.queueItem != null && !job.queueItem.SameVersion(CauQueueItem.Capture(plan, g), job.modelSucceeded ? job.avatarId : null)) state = "待上传";
                 else if (job != null) state = job.verification == CauVerificationStatus.Passed ? "模型已核验" :
-                    job.verification == CauVerificationStatus.Failed ? "上传未通过" : job.modelSucceeded ? "待核验" : "等待上传结果";
+                    job.verification == CauVerificationStatus.Failed || (job.status == CauExtraStatus.Failed && !job.modelSucceeded)
+                        ? "待上传" : job.modelSucceeded ? "待核验" : "等待上传结果";
                 else if (g.uploadSucceeded) state = "已上传 · 未核验";
             }
             return g.outfitIds.Count + " 套衣服 · " + state;
@@ -582,8 +582,19 @@ namespace Zincat.AvatarSplitTest
             var profile = CauExtraUploads.State.profiles.LastOrDefault(x => x.settingGuid == g.cauSettingGuid && x.groupId == g.id && x.sourceKey == SplitConfigStore.Key(plan));
             bool changed = profile != null && (profile.desiredName != g.UploadName || (profile.imageHash ?? "") != (string.IsNullOrEmpty(g.photoCoverGuid) ? "" : g.photoCoverHash) || (!string.IsNullOrEmpty(g.photoCoverGuid) && !valid));
             queuedState.text = profile == null ? "可直接更新已有蓝图，也可随 CAU 上传后同步。" : changed ? "名称或封面已修改，可直接更新，或重新交给 CAU。" : "交接名称：" + profile.desiredName;
-            var job = CurrentExtraJob(); extraState.text = job != null ? CauExtraUploads.Status(job) : profile != null ? "已交接 · 等待你在 CAU 开始上传" : "";
-            if (job != null && !job.metadataOnly) extraState.text = CauUploadVerification.Describe(job) + "\n名称与封面：" + CauExtraUploads.Status(job);
+            var job = CurrentExtraJob();
+            if (job == null)
+                extraState.text = profile != null ? "已交接 · 等待你在 CAU 开始上传" : "";
+            else if (job.status == CauExtraStatus.Failed || (!job.metadataOnly && job.verification == CauVerificationStatus.Failed))
+                extraState.text = "";
+            else if (job.metadataOnly)
+                extraState.text = CauExtraUploads.Status(job);
+            else
+            {
+                var modelStatus = job.verification == CauVerificationStatus.Uncertain
+                    ? "模型待核验" : CauUploadVerification.Describe(job);
+                extraState.text = modelStatus + "\n名称与封面：" + CauExtraUploads.Status(job);
+            }
             extraState.style.display = string.IsNullOrEmpty(extraState.text) ? DisplayStyle.None : DisplayStyle.Flex;
             bool idle = SplitIds.Editing && !localWork && !CauBridge.Busy && !CauExtraUploads.Busy;
             retryExtra.style.display = job != null && job.status == CauExtraStatus.Failed && (job.modelSucceeded || job.metadataOnly) ? DisplayStyle.Flex : DisplayStyle.None; retryExtra.SetEnabled(idle);

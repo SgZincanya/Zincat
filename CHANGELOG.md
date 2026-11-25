@@ -1,5 +1,12 @@
 # Changes
 
+## 2.13.0
+
+- Add optional emission intensity, color temperature and saturation controls to Lighting.
+- Update wardrobe menu generation and editor configuration handling.
+- Improve CAU batch queues, server information queries, cover preparation and image policies.
+- Add SDK editor integration and version-aware build support.
+
 ## 2.12.2
 
 - Adjust bust measurement mesh baking to account for inherited renderer scaling in Unity 2022.3.

@@ -36,6 +36,7 @@ namespace Zincat.Lighting.Editor
             public PrefabLightControl control;
             public string label;
             public string parameter;
+            public GameObject menu;
         }
 
         public static void Validate(ZincatLightingPrefab settings)
@@ -47,7 +48,10 @@ namespace Zincat.Lighting.Editor
             ValidateRange(settings.minimum, "最低亮度", 1);
             ValidateRange(settings.maximum, "最高亮度", 10);
             ValidateRange(settings.monochrome, "环境光颜色影响", 1);
-            if (!settings.minimum.enabled && !settings.maximum.enabled && !settings.monochrome.enabled)
+            ValidateRange(settings.emission, "自发光强度", 1);
+            ValidateRange(settings.temperature, "色温", 1);
+            ValidateRange(settings.saturation, "彩度", 2);
+            if (!settings.minimum.enabled && !settings.maximum.enabled && !settings.monochrome.enabled && !LightingSetup.HasExtraControls(settings))
                 throw new InvalidOperationException("请至少启用一个光照控制项。");
         }
 
@@ -81,24 +85,30 @@ namespace Zincat.Lighting.Editor
             Validate(settings);
             if (avatar.GetComponent<VRCAvatarDescriptor>() == null) throw new InvalidOperationException("光照组件需要放在带 Avatar Descriptor 的角色层级中。");
             if (settings.gameObject == avatar) throw new InvalidOperationException("请将光照菜单预制体放在角色下面，不要给 Avatar 根对象添加光照配置组件。");
+            LightingSetup.SynchronizeMenu(settings, false);
+            LightingSetup.ValidateMenu(settings, avatar.transform);
             var channels = new[]
             {
-                new ChannelSpec { channel = LightChannel.Minimum, control = settings.minimum, label = "最低亮度", parameter = settings.parameterPrefix + "/Minimum" },
-                new ChannelSpec { channel = LightChannel.Maximum, control = settings.maximum, label = "最高亮度", parameter = settings.parameterPrefix + "/Maximum" },
-                new ChannelSpec { channel = LightChannel.Monochrome, control = settings.monochrome, label = "环境光颜色影响", parameter = settings.parameterPrefix + "/Monochrome" }
+                new ChannelSpec { channel = LightChannel.Minimum, control = settings.minimum, label = "最低亮度", parameter = settings.parameterPrefix + "/Minimum", menu = settings.minimumMenu },
+                new ChannelSpec { channel = LightChannel.Maximum, control = settings.maximum, label = "最高亮度", parameter = settings.parameterPrefix + "/Maximum", menu = settings.maximumMenu },
+                new ChannelSpec { channel = LightChannel.Monochrome, control = settings.monochrome, label = "环境光颜色影响", parameter = settings.parameterPrefix + "/Monochrome", menu = settings.environmentMenu },
+                new ChannelSpec { channel = LightChannel.Emission, control = settings.emission, label = "自发光强度", parameter = settings.parameterPrefix + "/Emission", menu = settings.emissionMenu },
+                new ChannelSpec { channel = LightChannel.Temperature, control = settings.temperature, label = "色温", parameter = settings.parameterPrefix + "/Temperature", menu = settings.temperatureMenu },
+                new ChannelSpec { channel = LightChannel.Saturation, control = settings.saturation, label = "彩度", parameter = settings.parameterPrefix + "/Saturation", menu = settings.saturationMenu }
             }.Where(c => c.control.enabled).ToList();
             var renderers = avatar.GetComponentsInChildren<Renderer>(true)
                 .Where(r => settings.excludedRenderers == null || !settings.excludedRenderers.Contains(r)).ToList();
             var skipped = LightingSetup.GetSkippedPoiyomiMaterials(
                 renderers.SelectMany(renderer => renderer.sharedMaterials).Distinct(), settings);
             EnsureUniquePaths(avatar.transform, renderers, skipped);
-            LightingSetup.SynchronizeMenu(settings, false);
-            LightingSetup.ValidateMenu(settings, avatar.transform);
             if (!settings.minimum.enabled && settings.minimumMenu != null) Object.DestroyImmediate(settings.minimumMenu);
             if (!settings.maximum.enabled && settings.maximumMenu != null) Object.DestroyImmediate(settings.maximumMenu);
             if (!settings.monochrome.enabled && settings.environmentMenu != null) Object.DestroyImmediate(settings.environmentMenu);
-            var controlled = new Dictionary<LightChannel, Dictionary<Renderer, HashSet<string>>>();
-            foreach (var channel in channels) controlled[channel.channel] = new Dictionary<Renderer, HashSet<string>>();
+            if (!settings.emission.enabled && settings.emissionMenu != null) Object.DestroyImmediate(settings.emissionMenu);
+            if (!settings.temperature.enabled && settings.temperatureMenu != null) Object.DestroyImmediate(settings.temperatureMenu);
+            if (!settings.saturation.enabled && settings.saturationMenu != null) Object.DestroyImmediate(settings.saturationMenu);
+            var controlled = new Dictionary<LightChannel, Dictionary<Renderer, Dictionary<string, float>>>();
+            foreach (var channel in channels) controlled[channel.channel] = new Dictionary<Renderer, Dictionary<string, float>>();
             LightingSetup.PrepareForBuild(avatar);
             foreach (Renderer renderer in renderers)
             {
@@ -118,25 +128,32 @@ namespace Zincat.Lighting.Editor
                                 "\nShader：" + source.shader.name);
                         }
                     }
-                    foreach (var channel in channels)
+                    foreach (var channel in channels.Where(c => !LightingExtraControls.IsExtra(c.channel)))
                         foreach (string property in MaterialSupport.Properties(family, channel.channel, settings.followAdditiveLighting))
                         {
                             if (!source.HasProperty(property)) continue;
                             if (!controlled[channel.channel].TryGetValue(renderer, out var properties))
-                            { properties = new HashSet<string>(); controlled[channel.channel].Add(renderer, properties); }
-                            properties.Add(property);
+                            { properties = new Dictionary<string, float>(); controlled[channel.channel].Add(renderer, properties); }
+                            properties[property] = 0;
                         }
+                }
+                foreach (var channel in channels.Where(c => LightingExtraControls.IsExtra(c.channel)))
+                {
+                    var properties = LightingExtraControls.Collect(renderer, channel.channel, skipped, out string issue);
+                    if (issue != null) Debug.LogWarning("[Zincat 光照] " + issue, renderer);
+                    if (properties.Count > 0) controlled[channel.channel].Add(renderer, properties);
                 }
             }
             foreach (var channel in channels.Where(c => controlled[c.channel].Count == 0))
             {
-                GameObject item = channel.channel == LightChannel.Minimum ? settings.minimumMenu : channel.channel == LightChannel.Maximum ? settings.maximumMenu : settings.environmentMenu;
-                if (item != null) Object.DestroyImmediate(item);
+                if (channel.menu != null) Object.DestroyImmediate(channel.menu);
             }
             channels = channels.Where(c => controlled[c.channel].Count > 0).ToList();
+            if (settings.extraMenu != null && !channels.Any(c => LightingExtraControls.IsExtra(c.channel)))
+                Object.DestroyImmediate(settings.extraMenu);
             if (channels.Count == 0)
             {
-                if (skipped.Count == 0)
+                if (skipped.Count == 0 && !LightingSetup.HasExtraControls(settings))
                     throw new InvalidOperationException("没有找到支持所选光照属性的 lilToon 或 Poiyomi 材质。");
 
                 // Omit the empty menu from the build while keeping the prefab's other objects and components.
@@ -147,10 +164,21 @@ namespace Zincat.Lighting.Editor
                 Object.DestroyImmediate(settings);
                 return;
             }
-            CheckParameterConflicts(avatar, channels.Select(c => c.parameter));
+            bool hasExtras = channels.Any(c => LightingExtraControls.IsExtra(c.channel));
+            string extraToggleParameter = settings.parameterPrefix + "/ExtrasEnabled";
+            var parameterNames = channels.Select(c => c.parameter);
+            if (hasExtras) parameterNames = parameterNames.Append(extraToggleParameter);
+            CheckParameterConflicts(avatar, parameterNames);
             var generated = new GameObject("Zincat Lighting Generated");
             generated.transform.SetParent(avatar.transform, false);
             var controller = new AnimatorController { name = "Zincat Lighting" };
+            if (hasExtras)
+                controller.AddParameter(new AnimatorControllerParameter
+                {
+                    name = extraToggleParameter,
+                    type = AnimatorControllerParameterType.Bool,
+                    defaultBool = settings.extrasEnabledByDefault
+                });
             foreach (var channel in channels)
             {
                 controller.AddParameter(new AnimatorControllerParameter
@@ -159,20 +187,24 @@ namespace Zincat.Lighting.Editor
                     type = AnimatorControllerParameterType.Float,
                     defaultFloat = channel.control.NormalizedInitial
                 });
-                AnimationClip low = MakeEndpoint(avatar.transform, channel.label + " Low", controlled[channel.channel], channel.channel == LightChannel.Monochrome ? 1 - channel.control.lower : channel.control.lower);
-                AnimationClip high = MakeEndpoint(avatar.transform, channel.label + " High", controlled[channel.channel], channel.channel == LightChannel.Monochrome ? 1 - channel.control.upper : channel.control.upper);
-                saveAsset(low); saveAsset(high);
+                var values = new List<float> { channel.control.lower };
+                if (channel.channel == LightChannel.Temperature && channel.control.lower < 0.5f && channel.control.upper > 0.5f)
+                    values.Add(0.5f);
+                values.Add(channel.control.upper);
+                var children = new List<ChildMotion>();
+                foreach (float value in values)
+                {
+                    var clip = MakeEndpoint(avatar.transform, channel.label + " " + value, controlled[channel.channel], channel.channel, value);
+                    saveAsset(clip);
+                    children.Add(new ChildMotion { motion = clip, threshold = Mathf.InverseLerp(channel.control.lower, channel.control.upper, value), timeScale = 1 });
+                }
                 var blend = new BlendTree
                 {
                     name = channel.label,
                     blendType = BlendTreeType.Simple1D,
                     blendParameter = channel.parameter,
                     useAutomaticThresholds = false,
-                    children = new[]
-                    {
-                        new ChildMotion { motion = low, threshold = 0, timeScale = 1 },
-                        new ChildMotion { motion = high, threshold = 1, timeScale = 1 }
-                    }
+                    children = children.ToArray()
                 };
                 saveAsset(blend);
                 var machine = new AnimatorStateMachine { name = channel.label };
@@ -180,6 +212,25 @@ namespace Zincat.Lighting.Editor
                 state.motion = blend;
                 state.writeDefaultValues = false;
                 machine.defaultState = state;
+                if (LightingExtraControls.IsExtra(channel.channel))
+                {
+                    var original = MakeEndpoint(avatar.transform, channel.label + " Original",
+                        controlled[channel.channel], channel.channel, 0, true);
+                    saveAsset(original);
+                    var disabled = machine.AddState("Original");
+                    disabled.motion = original;
+                    disabled.writeDefaultValues = false;
+                    machine.defaultState = settings.extrasEnabledByDefault ? state : disabled;
+                    var turnOff = state.AddTransition(disabled);
+                    turnOff.hasExitTime = false;
+                    turnOff.duration = 0;
+                    turnOff.AddCondition(AnimatorConditionMode.IfNot, 0, extraToggleParameter);
+                    var turnOn = disabled.AddTransition(state);
+                    turnOn.hasExitTime = false;
+                    turnOn.duration = 0;
+                    turnOn.AddCondition(AnimatorConditionMode.If, 0, extraToggleParameter);
+                    saveAsset(turnOff); saveAsset(turnOn); saveAsset(disabled);
+                }
                 controller.AddLayer(new AnimatorControllerLayer { name = settings.parameterPrefix + " " + channel.label, defaultWeight = 1, stateMachine = machine });
                 saveAsset(state); saveAsset(machine);
             }
@@ -200,17 +251,27 @@ namespace Zincat.Lighting.Editor
                 defaultValue = c.control.NormalizedInitial,
                 hasExplicitDefaultValue = true
             }).ToList();
+            if (hasExtras)
+                parameters.parameters.Add(new ParameterConfig
+                {
+                    nameOrPrefix = extraToggleParameter,
+                    syncType = ParameterSyncType.Bool,
+                    localOnly = !settings.networkSynced,
+                    saved = settings.rememberValues,
+                    defaultValue = settings.extrasEnabledByDefault ? 1 : 0,
+                    hasExplicitDefaultValue = true
+                });
             foreach (var configuration in all) Object.DestroyImmediate(configuration);
         }
 
-        private static AnimationClip MakeEndpoint(Transform root, string name, Dictionary<Renderer, HashSet<string>> bindings, float value)
+        private static AnimationClip MakeEndpoint(Transform root, string name, Dictionary<Renderer, Dictionary<string, float>> bindings, LightChannel channel, float value, bool original = false)
         {
             var clip = new AnimationClip { name = name, frameRate = 60 };
             foreach (var entry in bindings)
-                foreach (string property in entry.Value.OrderBy(p => p, StringComparer.Ordinal))
+                foreach (var property in entry.Value.OrderBy(p => p.Key, StringComparer.Ordinal))
                 {
-                    var binding = EditorCurveBinding.FloatCurve(AnimationUtility.CalculateTransformPath(entry.Key.transform, root), entry.Key.GetType(), "material." + property);
-                    AnimationUtility.SetEditorCurve(clip, binding, AnimationCurve.Constant(0, 1, value));
+                    var binding = EditorCurveBinding.FloatCurve(AnimationUtility.CalculateTransformPath(entry.Key.transform, root), entry.Key.GetType(), "material." + property.Key);
+                    AnimationUtility.SetEditorCurve(clip, binding, AnimationCurve.Constant(0, 1, original ? property.Value : LightingExtraControls.Evaluate(channel, property.Key, property.Value, value)));
                 }
             return clip;
         }

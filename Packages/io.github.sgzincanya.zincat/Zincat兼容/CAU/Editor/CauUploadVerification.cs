@@ -18,9 +18,6 @@ namespace Zincat.AvatarSplitTest
     }
     [InitializeOnLoad] internal static class CauUploadVerification
     {
-        // No network traffic on initialization: reads start only after explicit handoff
-        // or a successful model event, and rechecks never write remote data.
-        static readonly Dictionary<string, CauModelBaseline> prepared = new Dictionary<string, CauModelBaseline>();
         static bool running, stopping;
         static CancellationTokenSource cancellation;
         static CauUploadVerification()
@@ -31,34 +28,19 @@ namespace Zincat.AvatarSplitTest
             EditorApplication.playModeStateChanged += s => { if (s == PlayModeStateChange.ExitingEditMode) cancellation?.Cancel(); };
         }
         static void Stop() { stopping = true; cancellation?.Cancel(); }
-        static string Key(string source, string group) => source + ":" + group;
-        internal static async Task CaptureBaselines(CauQueueItem[] items, ICauExtraBackend api, CancellationToken token)
+        internal static void Bind(CauExtraProfile profile, string userId)
         {
-            string user = api.UserId;
-            if (string.IsNullOrEmpty(user)) throw new InvalidOperationException("请先登录 VRChat SDK。");
-            var captured = new Dictionary<string, CauModelBaseline>();
-            foreach (var item in items)
-            {
-                token.ThrowIfCancellationRequested();
-                var baseline = new CauModelBaseline { sourceKey = item.sourceKey, groupId = item.groupId, avatarId = item.blueprintId,
-                    userId = user, capturedAt = DateTime.UtcNow.ToString("o"), existing = !string.IsNullOrEmpty(item.blueprintId) };
-                if (baseline.existing)
+            // A new avatar needs no remote baseline. For an existing avatar, do
+            // not infer a new package from a cached or post-upload comparison.
+            profile.baseline = string.IsNullOrEmpty(profile.expectedId) && !string.IsNullOrEmpty(userId)
+                ? new CauModelBaseline
                 {
-                    var remote = await api.Read(item.blueprintId, token);
-                    if (remote == null || remote.id != item.blueprintId || remote.authorId != user)
-                        throw new InvalidOperationException(item.name + "：蓝图不存在或不属于当前账号，未交接。");
-                    baseline.assetUrl = remote.assetUrl; baseline.version = remote.version;
-                    // A reserved ID without an initial package is still allowed for model upload.
+                    sourceKey = profile.sourceKey,
+                    groupId = profile.groupId,
+                    userId = userId,
+                    capturedAt = DateTime.UtcNow.ToString("o")
                 }
-                if (api.UserId != user) throw new InvalidOperationException("登录账号已变化，请重新交接。");
-                captured[Key(item.sourceKey, item.groupId)] = baseline;
-            }
-            foreach (var pair in captured) prepared[pair.Key] = pair.Value;
-        }
-        internal static void Bind(CauExtraProfile profile)
-        {
-            profile.baseline = prepared.TryGetValue(Key(profile.sourceKey, profile.groupId), out var baseline)
-                && (baseline.avatarId ?? "") == (profile.expectedId ?? "") ? baseline : null;
+                : null;
         }
         internal static void Started(CauExtraJob job, CauExtraProfile profile, string platform)
         {

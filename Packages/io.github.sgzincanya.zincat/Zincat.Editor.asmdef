@@ -12,6 +12,7 @@
     "nadena.dev.ndmf.runtime",
     "nadena.dev.modular-avatar.core",
     "VRC.SDK3A",
+    "VRC.SDK3A.Editor",
     "VRC.SDKBase",
     "VRC.SDKBase.Editor",
     "VRC.SDKBase.Editor.BuildPipeline"
@@ -19,5 +20,12 @@
   "includePlatforms": [
     "Editor"
   ],
-  "autoReferenced": true
+  "autoReferenced": true,
+  "versionDefines": [
+    {
+      "name": "com.vrchat.base",
+      "expression": "3.7.5",
+      "define": "ZINCAT_VRCSDK_HAS_ACTIVE_BUILD_TYPE"
+    }
+  ]
 }

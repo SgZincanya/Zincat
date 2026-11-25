@@ -24,22 +24,26 @@ namespace Zincat.Lighting.Editor
                 .SelectMany(r => r.sharedMaterials).Where(m => m != null).Distinct();
         }
 
-        public static string[] RequiredProperties(ZincatLightingPrefab settings)
+        public static string[] RequiredProperties(ZincatLightingPrefab settings, Material material = null)
         {
             var properties = new List<string>();
             if (settings.minimum.enabled) properties.AddRange(MaterialSupport.Properties(ShaderFamily.Poiyomi, LightChannel.Minimum, settings.followAdditiveLighting));
             if (settings.maximum.enabled) properties.AddRange(MaterialSupport.Properties(ShaderFamily.Poiyomi, LightChannel.Maximum, settings.followAdditiveLighting));
             if (settings.monochrome.enabled) properties.AddRange(MaterialSupport.Properties(ShaderFamily.Poiyomi, LightChannel.Monochrome, settings.followAdditiveLighting));
-            return properties.Distinct().ToArray();
+            foreach (var channel in new[] { LightChannel.Emission, LightChannel.Temperature, LightChannel.Saturation })
+                if (ExtraControl(settings, channel).enabled)
+                    properties.AddRange(material == null
+                        ? MaterialSupport.Properties(ShaderFamily.Poiyomi, channel, false)
+                        : MaterialSupport.Properties(material, channel, false));
+            return properties.Select(property => property.Split('.')[0]).Distinct().ToArray();
         }
 
         internal static HashSet<Material> GetSkippedPoiyomiMaterials(IEnumerable<Material> materials, ZincatLightingPrefab settings)
         {
-            var properties = RequiredProperties(settings);
             // A prefab can ship the optimized shader without the Poiyomi shaders used to regenerate it.
             // Already animated materials can still be used as-is.
             var skipped = new HashSet<Material>(materials.Where(m =>
-                MaterialSupport.IsLocked(m) && MaterialSupport.PoiyomiReadinessIssue(m, properties) != null));
+                MaterialSupport.IsLocked(m) && ReadinessIssue(m, settings) != null));
             if (skipped.Count > 0 && MaterialSupport.HasPoiyomiSourceShaders()) skipped.Clear();
             return skipped;
         }
@@ -51,7 +55,13 @@ namespace Zincat.Lighting.Editor
 
         public static string ReadinessIssue(Material material, ZincatLightingPrefab settings)
         {
-            return MaterialSupport.PoiyomiReadinessIssue(material, RequiredProperties(settings));
+            string issue = MaterialSupport.PoiyomiReadinessIssue(material, RequiredProperties(settings, material));
+            if (issue != null) return issue;
+            if (MaterialSupport.Identify(material) == ShaderFamily.Poiyomi && settings.saturation.enabled &&
+                material.HasProperty("_Saturation") && material.HasProperty("_MainColorAdjustToggle") &&
+                material.GetFloat("_MainColorAdjustToggle") == 0)
+                return "彩度控制需要启用 Poiyomi Color Adjust。请准备 Poiyomi 材质。";
+            return null;
         }
 
         // Upload hooks call this before NDMF pauses asset imports. The builder
@@ -96,7 +106,12 @@ namespace Zincat.Lighting.Editor
                     if (AssetDatabase.GetAssetPath(source).Length == 0 || !AssetDatabase.IsOpenForEdit(source))
                         throw new InvalidOperationException("材质必须是可写的工程资产：" + source.name);
                     var prepared = MaterialSupport.PrepareCopy(source); staged.Add(prepared);
-                    foreach (string property in RequiredProperties(settings))
+                    if (settings.saturation.enabled && prepared.HasProperty("_Saturation") && prepared.HasProperty("_MainColorAdjustToggle"))
+                    {
+                        prepared.SetFloat("_MainColorAdjustToggle", 1);
+                        prepared.EnableKeyword("COLOR_GRADING_HDR");
+                    }
+                    foreach (string property in RequiredProperties(settings, prepared))
                     {
                         if (!prepared.HasProperty(property)) throw new InvalidOperationException(source.name + " 缺少属性 " + property);
                         MaterialSupport.AllowAnimation(prepared, property);
@@ -115,10 +130,19 @@ namespace Zincat.Lighting.Editor
                     EditorUtility.SetDirty(sources[i]);
                 }
                 var parameters = lockMethod.GetParameters();
-                object[] args = parameters.Select((p, i) => i == 0 ? (object)sources : p.HasDefaultValue ? p.DefaultValue : System.Activator.CreateInstance(p.ParameterType)).ToArray();
-                bool success = (bool)lockMethod.Invoke(null, args);
-                if (!success || sources.Any(m => !MaterialSupport.IsLocked(m) || !IsReady(m, settings)))
-                    throw new InvalidOperationException("Poiyomi 重新锁定未完成，材质已恢复到操作前状态。");
+                var args = parameters.Select(p => p.HasDefaultValue ? p.DefaultValue :
+                    p.ParameterType.IsValueType ? System.Activator.CreateInstance(p.ParameterType) : null).ToArray();
+                // A batch can reuse a deleted shader if the previous owner is also in that batch.
+                // Separate calls let Thry reuse only shaders that still exist.
+                foreach (var material in sources)
+                {
+                    args[0] = new[] { material };
+                    bool locked = (bool)lockMethod.Invoke(null, args) && MaterialSupport.IsLocked(material);
+                    var issue = locked ? ReadinessIssue(material, settings) : "未生成或未应用锁定 Shader";
+                    if (issue != null)
+                        throw new InvalidOperationException("Poiyomi 重新锁定未完成，材质已恢复到操作前状态。\n" +
+                            material.name + "：" + issue);
+                }
                 foreach (var material in sources) AssetDatabase.SaveAssetIfDirty(material);
                 return sources.Length;
             }
@@ -149,8 +173,51 @@ namespace Zincat.Lighting.Editor
             return (settings.GetComponent<ModularAvatarMenuInstaller>() != null) != settings.installMenuAutomatically ||
                 NeedsUpdate(settings, settings.minimumMenu, settings.minimum.enabled, "/Minimum") ||
                 NeedsUpdate(settings, settings.maximumMenu, settings.maximum.enabled, "/Maximum") ||
-                NeedsUpdate(settings, settings.environmentMenu, settings.monochrome.enabled, "/Monochrome");
+                NeedsUpdate(settings, settings.environmentMenu, settings.monochrome.enabled, "/Monochrome") ||
+                ExtraMenuNeedsSynchronization(settings);
         }
+
+        internal static PrefabLightControl ExtraControl(ZincatLightingPrefab settings, LightChannel channel)
+        {
+            switch (channel)
+            {
+                case LightChannel.Emission: return settings.emission;
+                case LightChannel.Temperature: return settings.temperature;
+                case LightChannel.Saturation: return settings.saturation;
+                default: throw new ArgumentOutOfRangeException(nameof(channel));
+            }
+        }
+
+        internal static bool HasExtraControls(ZincatLightingPrefab settings) =>
+            settings.emission.enabled || settings.temperature.enabled || settings.saturation.enabled;
+
+        private static bool ExtraMenuNeedsSynchronization(ZincatLightingPrefab settings)
+        {
+            if (settings.extraMenu == null) return HasExtraControls(settings);
+            var item = settings.extraMenu.GetComponent<ModularAvatarMenuItem>();
+            if (!settings.extraMenu.transform.IsChildOf(settings.submenuObject.transform) ||
+                settings.extraMenu.activeSelf != HasExtraControls(settings) || item == null ||
+                item.Control == null || item.Control.type != VRCExpressionsMenu.Control.ControlType.SubMenu ||
+                item.MenuSource != SubmenuSource.Children) return true;
+            return ExtraToggleNeedsSynchronization(settings) ||
+                OptionalNeedsUpdate(settings, settings.emissionMenu, settings.emission.enabled, "/Emission") ||
+                OptionalNeedsUpdate(settings, settings.temperatureMenu, settings.temperature.enabled, "/Temperature") ||
+                OptionalNeedsUpdate(settings, settings.saturationMenu, settings.saturation.enabled, "/Saturation");
+        }
+
+        private static bool ExtraToggleNeedsSynchronization(ZincatLightingPrefab settings)
+        {
+            var obj = settings.extraToggleMenu;
+            var item = obj == null ? null : obj.GetComponent<ModularAvatarMenuItem>();
+            return item == null || obj.transform.parent != settings.extraMenu.transform || !obj.activeSelf ||
+                item.Control == null || item.Control.type != VRCExpressionsMenu.Control.ControlType.Toggle ||
+                item.Control.parameter == null || item.Control.parameter.name != settings.parameterPrefix + "/ExtrasEnabled" ||
+                item.Control.value != 1 || item.isDefault != settings.extrasEnabledByDefault ||
+                item.isSaved != settings.rememberValues || item.isSynced != settings.networkSynced;
+        }
+
+        private static bool OptionalNeedsUpdate(ZincatLightingPrefab settings, GameObject obj, bool active, string suffix) =>
+            obj == null ? active : NeedsUpdate(settings, obj, active, suffix) || obj.transform.parent != settings.extraMenu.transform;
 
         private static bool NeedsUpdate(ZincatLightingPrefab settings, GameObject obj, bool active, string suffix)
         {
@@ -189,6 +256,7 @@ namespace Zincat.Lighting.Editor
             settings.minimumMenu = UpdateItem(settings, settings.minimumMenu, "最低亮度", "/Minimum", settings.minimum.enabled, undo);
             settings.maximumMenu = UpdateItem(settings, settings.maximumMenu, "最高亮度", "/Maximum", settings.maximum.enabled, undo);
             settings.environmentMenu = UpdateItem(settings, settings.environmentMenu, "环境光颜色影响", "/Monochrome", settings.monochrome.enabled, undo);
+            SynchronizeExtraMenu(settings, undo);
             var installer = settings.GetComponent<ModularAvatarMenuInstaller>();
             if (settings.installMenuAutomatically && installer == null) Add<ModularAvatarMenuInstaller>(settings.gameObject, undo);
             if (!settings.installMenuAutomatically && installer != null)
@@ -201,6 +269,76 @@ namespace Zincat.Lighting.Editor
             }
         }
 
+        private static void SynchronizeExtraMenu(ZincatLightingPrefab settings, bool undo)
+        {
+            if (settings.extraMenu == null)
+            {
+                if (!HasExtraControls(settings)) return;
+                settings.extraMenu = Create("额外设置", settings.submenuObject.transform, undo);
+            }
+            if (!settings.extraMenu.transform.IsChildOf(settings.submenuObject.transform))
+                throw new InvalidOperationException("额外设置菜单不在光照子菜单中。");
+            var item = settings.extraMenu.GetComponent<ModularAvatarMenuItem>();
+            if (item == null)
+            {
+                item = Add<ModularAvatarMenuItem>(settings.extraMenu, undo);
+                item.Control = new VRCExpressionsMenu.Control { name = settings.extraMenu.name };
+            }
+            if (undo) Undo.RecordObjects(new Object[] { item, settings.extraMenu }, "Update Zincat Extra Menu");
+            if (item.Control == null) item.Control = new VRCExpressionsMenu.Control { name = settings.extraMenu.name };
+            item.Control.type = VRCExpressionsMenu.Control.ControlType.SubMenu;
+            item.MenuSource = SubmenuSource.Children;
+            settings.extraMenu.SetActive(HasExtraControls(settings));
+            SynchronizeExtraToggle(settings, undo);
+            settings.emissionMenu = UpdateOptionalItem(settings, settings.emissionMenu, "自发光强度", "/Emission", settings.emission.enabled, undo);
+            settings.temperatureMenu = UpdateOptionalItem(settings, settings.temperatureMenu, "色温", "/Temperature", settings.temperature.enabled, undo);
+            settings.saturationMenu = UpdateOptionalItem(settings, settings.saturationMenu, "彩度", "/Saturation", settings.saturation.enabled, undo);
+            if (undo)
+            {
+                PrefabUtility.RecordPrefabInstancePropertyModifications(item);
+                PrefabUtility.RecordPrefabInstancePropertyModifications(settings.extraMenu);
+            }
+        }
+
+        private static void SynchronizeExtraToggle(ZincatLightingPrefab settings, bool undo)
+        {
+            if (settings.extraToggleMenu == null)
+            {
+                settings.extraToggleMenu = Create("启用额外设置", settings.extraMenu.transform, undo);
+                settings.extraToggleMenu.transform.SetAsFirstSibling();
+            }
+            var obj = settings.extraToggleMenu;
+            if (obj.transform.parent != settings.extraMenu.transform)
+                throw new InvalidOperationException("额外设置总开关不在额外设置菜单中。");
+            var item = obj.GetComponent<ModularAvatarMenuItem>();
+            if (item == null)
+            {
+                item = Add<ModularAvatarMenuItem>(obj, undo);
+                item.Control = new VRCExpressionsMenu.Control { name = obj.name };
+            }
+            if (undo) Undo.RecordObjects(new Object[] { obj, item }, "Update Zincat Extra Toggle");
+            if (item.Control == null) item.Control = new VRCExpressionsMenu.Control { name = obj.name };
+            item.Control.type = VRCExpressionsMenu.Control.ControlType.Toggle;
+            item.Control.parameter = new VRCExpressionsMenu.Control.Parameter { name = settings.parameterPrefix + "/ExtrasEnabled" };
+            item.Control.subParameters = Array.Empty<VRCExpressionsMenu.Control.Parameter>();
+            item.Control.value = 1;
+            item.isDefault = settings.extrasEnabledByDefault;
+            item.isSaved = settings.rememberValues;
+            item.isSynced = settings.networkSynced;
+            obj.SetActive(true);
+            if (undo)
+            {
+                PrefabUtility.RecordPrefabInstancePropertyModifications(obj);
+                PrefabUtility.RecordPrefabInstancePropertyModifications(item);
+            }
+        }
+
+        private static GameObject UpdateOptionalItem(ZincatLightingPrefab settings, GameObject obj, string label, string suffix, bool active, bool undo)
+        {
+            if (obj == null && !active) return null;
+            return UpdateItem(settings, obj, label, suffix, active, undo, settings.extraMenu.transform);
+        }
+
         private static T Add<T>(GameObject obj, bool undo) where T : Component => undo ? Undo.AddComponent<T>(obj) : obj.AddComponent<T>();
         private static GameObject Create(string name, Transform parent, bool undo)
         {
@@ -209,11 +347,11 @@ namespace Zincat.Lighting.Editor
             else obj.transform.SetParent(parent, false);
             return obj;
         }
-        private static GameObject UpdateItem(ZincatLightingPrefab settings, GameObject obj, string label, string suffix, bool active, bool undo)
+        private static GameObject UpdateItem(ZincatLightingPrefab settings, GameObject obj, string label, string suffix, bool active, bool undo, Transform parent = null)
         {
             if (obj == null)
             {
-                obj = Create(label, settings.submenuObject.transform, undo);
+                obj = Create(label, parent ?? settings.submenuObject.transform, undo);
                 Add<ModularAvatarMenuItem>(obj, undo).Control = new VRCExpressionsMenu.Control { name = label };
             }
             if (!obj.transform.IsChildOf(settings.transform)) throw new InvalidOperationException("菜单项不在预制体层级中。");
@@ -244,6 +382,10 @@ namespace Zincat.Lighting.Editor
             ValidateItem(settings.minimumMenu, settings.minimum.enabled, settings.parameterPrefix + "/Minimum");
             ValidateItem(settings.maximumMenu, settings.maximum.enabled, settings.parameterPrefix + "/Maximum");
             ValidateItem(settings.environmentMenu, settings.monochrome.enabled, settings.parameterPrefix + "/Monochrome");
+            if (ExtraMenuNeedsSynchronization(settings)) throw new InvalidOperationException("额外设置菜单配置无效。");
+            if (settings.emission.enabled) ValidateItem(settings.emissionMenu, true, settings.parameterPrefix + "/Emission");
+            if (settings.temperature.enabled) ValidateItem(settings.temperatureMenu, true, settings.parameterPrefix + "/Temperature");
+            if (settings.saturation.enabled) ValidateItem(settings.saturationMenu, true, settings.parameterPrefix + "/Saturation");
         }
 
         private static void ValidateItem(GameObject itemObject, bool active, string parameter)

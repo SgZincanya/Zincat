@@ -536,6 +536,8 @@ namespace Zincat.Clothing.Editor
                 Undo.RecordObject(this, "设置批量控制");
                 enableBatchControl = evt.newValue;
                 RefreshBatchSettings();
+                RefreshPartOrderPanel();
+                ApplyTextStyle();
             });
             heading.Add(toggle);
             batchSettings.Add(heading);
@@ -842,6 +844,9 @@ namespace Zincat.Clothing.Editor
                 { draft.Targets = current.Targets; draft.MissingTargets = current.MissingTargets; }, draft.Key + " 物体");
                 Merge(Shapes(old), Shapes(draft), Shapes(current), () => { draft.UseBlendshapes = current.UseBlendshapes; draft.BlendshapesInverted = current.BlendshapesInverted; draft.Blendshapes = current.Blendshapes; draft.AdvancedExpanded = true; }, draft.Key + " 形态键");
                 Merge(Materials(old), Materials(draft), Materials(current), () => { draft.UseMaterials = current.UseMaterials; draft.MaterialsInverted = current.MaterialsInverted; draft.Materials = current.Materials; draft.AdvancedExpanded = true; }, draft.Key + " 材质");
+                string PhysBones(PartSlot s) => HasPhysBoneKeys(s) ? JsonUtility.ToJson(s.PhysBones) : "";
+                Merge(PhysBones(old), PhysBones(draft), PhysBones(current), () =>
+                    draft.PhysBones = CopyPhysBoneSettings(current.PhysBones), draft.Key + " 动骨联动");
             }
             if (conflicts.Count > 0)
             {
@@ -1052,21 +1057,37 @@ namespace Zincat.Clothing.Editor
             }
         }
 
+        private const string BatchMenuOrderKey = "batch";
+
+        private static IEnumerable<string> OrderedMenuKeys(List<PartSlot> parts, List<string> order)
+        {
+            var defaults = new[] { BatchMenuOrderKey }.Concat(parts
+                .OrderBy(slot => slot.Key.Substring(1), StringComparer.Ordinal)
+                .ThenBy(slot => slot.Backup).Select(slot => slot.Key)).ToArray();
+            if (order == null || order.Count == 0) return defaults;
+            var known = new HashSet<string>(defaults);
+            var saved = order.Where(known.Contains).Distinct().ToList();
+            if (!saved.Contains(BatchMenuOrderKey)) saved.Insert(0, BatchMenuOrderKey);
+            var savedKeys = new HashSet<string>(saved);
+            return saved.Concat(defaults.Where(key => !savedKeys.Contains(key)));
+        }
+
         private static IEnumerable<PartSlot> OrderedParts(List<PartSlot> parts, List<string> order)
         {
-            var defaults = parts.OrderBy(slot => slot.Key.Substring(1), StringComparer.Ordinal)
-                .ThenBy(slot => slot.Backup).ToArray();
-            if (order == null || order.Count == 0) return defaults;
             var byKey = parts.ToDictionary(slot => slot.Key);
-            return order.Where(key => key != null && byKey.ContainsKey(key)).Distinct().Select(key => byKey[key])
-                .Concat(defaults.Where(slot => !order.Contains(slot.Key)));
+            return OrderedMenuKeys(parts, order).Where(byKey.ContainsKey).Select(key => byKey[key]);
         }
 
         private void RefreshPartOrderPanel()
         {
             partOrderPanel.Clear();
             if (!showPartOrder) return;
-            var order = OrderedParts(slots, partOrder).Where(HasOrderablePart).ToList();
+            var orderable = slots.Where(HasOrderablePart).ToDictionary(slot => slot.Key);
+            bool showBatch = enableBatchControl && orderable.Count > 0;
+            var order = OrderedMenuKeys(slots, partOrder)
+                .Where(key => orderable.ContainsKey(key) || (showBatch && key == BatchMenuOrderKey)).ToList();
+            var batchNode = loadedMenuRoot == null ? null : loadedMenuRoot.GetComponent<WardrobeGeneratedMenu>()?.BatchControlNode;
+            string batchName = batchNode == null ? "批量控制" : ReadMenuName(batchNode);
             var surface = new VisualElement { name = "wardrobe-part-order-surface" };
             surface.style.backgroundColor = EditorGUIUtility.isProSkin ? (Color)new Color32(64, 64, 66, 255) : (Color)new Color32(231, 232, 235, 255);
             surface.style.marginTop = 5;
@@ -1121,9 +1142,12 @@ namespace Zincat.Clothing.Editor
                 },
                 bindItem = (element, index) =>
                 {
-                    var slot = order[index];
-                    string name = string.IsNullOrEmpty(slot.MenuName) ? DefaultMenuName(slot.Category, slot.Backup) : slot.MenuName;
-                    if (slot.Backup && !name.EndsWith("（备用）", StringComparison.Ordinal)) name += "（备用）";
+                    string name = batchName;
+                    if (orderable.TryGetValue(order[index], out var slot))
+                    {
+                        name = string.IsNullOrEmpty(slot.MenuName) ? DefaultMenuName(slot.Category, slot.Backup) : slot.MenuName;
+                        if (slot.Backup && !name.EndsWith("（备用）", StringComparison.Ordinal)) name += "（备用）";
+                    }
                     ((Label)element).text = name;
                     element.tooltip = name;
                     for (var row = element.parent; row != null; row = row.parent)
@@ -1146,15 +1170,244 @@ namespace Zincat.Clothing.Editor
             surface.Add(list);
         }
 
+        private static readonly Type FermataRigType = OptionalComponentType("Fermata.ModularRig.FermataModularRig");
+        private static readonly Type FermataToggleType = OptionalComponentType("Fermata.ModularRig.FermataPhysBoneToggle");
+
+        private static Type OptionalComponentType(string fullName) =>
+            TypeCache.GetTypesDerivedFrom<MonoBehaviour>().FirstOrDefault(type => type.FullName == fullName);
+
+        private static bool HasPhysBoneKeys(PartSlot slot) => slot.PhysBones?.Keys?.Count > 0;
+
+        private static WardrobePhysBoneSettings CopyPhysBoneSettings(WardrobePhysBoneSettings source) =>
+            source == null ? null : new WardrobePhysBoneSettings
+            {
+                HasRig = source.HasRig, RigPath = source.RigPath, PatchGuid = source.PatchGuid,
+                Keys = (source.Keys ?? new List<string>()).Where(key => !string.IsNullOrEmpty(key)).Distinct().ToList()
+            };
+
+        private static UnityEngine.Object FermataPatch(Component rig) =>
+            rig == null ? null : new SerializedObject(rig).FindProperty("patchAsset")?.objectReferenceValue;
+
+        private static string FermataPatchGuid(Component rig)
+        {
+            var patch = FermataPatch(rig);
+            return patch == null ? "" : AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(patch));
+        }
+
+        private static Component[] AvailableFermataRigs(Transform avatar)
+        {
+            if (avatar == null || FermataRigType == null || FermataToggleType == null) return Array.Empty<Component>();
+            return avatar.GetComponentsInChildren(FermataRigType, true).Where(rig =>
+            {
+                if (!(rig is Behaviour behaviour) || !behaviour.enabled || FermataPatch(rig) == null) return false;
+                for (var node = rig.transform; node != avatar; node = node.parent)
+                    if (!node.gameObject.activeSelf || node.CompareTag("EditorOnly")) return false;
+                return true;
+            }).ToArray();
+        }
+
+        private static Component ResolveFermataRig(Transform avatar, Component[] rigs, WardrobePhysBoneSettings settings)
+        {
+            if (settings == null || !settings.HasRig) return rigs.Length == 1 ? rigs[0] : null;
+            var target = FindUniquePath(avatar, settings.RigPath ?? "");
+            var matches = rigs.Where(rig => rig.transform == target &&
+                (string.IsNullOrEmpty(settings.PatchGuid) || FermataPatchGuid(rig) == settings.PatchGuid)).Take(2).ToArray();
+            if (matches.Length == 1) return matches[0];
+            // In another project the same patch may live on a differently named rig.
+            return rigs.Length == 1 && !string.IsNullOrEmpty(settings.PatchGuid) &&
+                FermataPatchGuid(rigs[0]) == settings.PatchGuid ? rigs[0] : null;
+        }
+
+        private static Dictionary<string, string> FermataBoneKeys(Component rig)
+        {
+            var result = new Dictionary<string, string>(StringComparer.Ordinal);
+            var patch = FermataPatch(rig);
+            var bones = patch == null ? null : new SerializedObject(patch).FindProperty("physBones");
+            if (bones == null || !bones.isArray) return result;
+            var ambiguous = new HashSet<string>(StringComparer.Ordinal);
+            for (int index = 0; index < bones.arraySize; index++)
+            {
+                var bone = bones.GetArrayElementAtIndex(index);
+                var name = bone.FindPropertyRelative("targetBoneName")?.stringValue;
+                var key = bone.FindPropertyRelative("rootTransformRelativePath")?.stringValue;
+                if (string.IsNullOrEmpty(key)) key = name;
+                if (string.IsNullOrEmpty(key) || ambiguous.Contains(key)) continue;
+                if (result.ContainsKey(key)) { result.Remove(key); ambiguous.Add(key); }
+                else result.Add(key, string.IsNullOrEmpty(name) ? key : name);
+            }
+            return result;
+        }
+
+        private static void SetFermataRig(WardrobePhysBoneSettings settings, Transform avatar, Component rig)
+        {
+            settings.HasRig = rig != null;
+            settings.RigPath = rig == null ? "" : AnimationUtility.CalculateTransformPath(rig.transform, avatar);
+            settings.PatchGuid = FermataPatchGuid(rig);
+        }
+
+        private void DrawPhysBoneSettings(VisualElement parent, PartSlot slot)
+        {
+            var panel = new Foldout { text = "部件显示时停用动骨", value = false };
+            panel.style.marginTop = 12;
+            parent.Add(panel);
+            var avatar = clothingRoot == null ? null : clothingRoot.transform.parent;
+            if (!slot.Targets.Any(target => target != null))
+                panel.Add(new HelpBox("需要绑定显隐目标。", HelpBoxMessageType.Info));
+            var rigs = AvailableFermataRigs(avatar);
+            var settings = slot.PhysBones;
+            var rig = ResolveFermataRig(avatar, rigs, settings);
+            if (rigs.Length == 0)
+                panel.Add(new HelpBox(FermataToggleType == null ? "需要安装支持衣服动骨联动的 Fermata PuniRig。"
+                    : "当前 Avatar 没有可用的 PuniRig 补丁。", HelpBoxMessageType.Info));
+            else if (rigs.Length > 1 || rig == null)
+            {
+                var picker = new ObjectField("PuniRig") { objectType = FermataRigType, value = rig, allowSceneObjects = true };
+                picker.RegisterValueChangedCallback(evt =>
+                {
+                    var chosen = evt.newValue as Component;
+                    if (!rigs.Contains(chosen)) { picker.SetValueWithoutNotify(rig); return; }
+                    Undo.RecordObject(this, "选择联动的 PuniRig");
+                    if (slot.PhysBones == null) slot.PhysBones = new WardrobePhysBoneSettings();
+                    SetFermataRig(slot.PhysBones, avatar, chosen);
+                    RebuildPhysBoneSettings(panel, slot);
+                });
+                panel.Add(picker);
+            }
+            var available = FermataBoneKeys(rig);
+            foreach (var entry in available)
+            {
+                string key = entry.Key;
+                var bone = new Toggle(entry.Value) { value = settings?.Keys?.Contains(key) == true, tooltip = key };
+                bone.RegisterValueChangedCallback(evt =>
+                {
+                    Undo.RecordObject(this, "配置分件动骨联动");
+                    if (slot.PhysBones == null) slot.PhysBones = new WardrobePhysBoneSettings();
+                    if (evt.newValue)
+                    {
+                        SetFermataRig(slot.PhysBones, avatar, rig);
+                        slot.PhysBones.Keys.Add(key);
+                    }
+                    else slot.PhysBones.Keys.Remove(key);
+                });
+                bone.SetEnabled(slot.Targets.Any(target => target != null) || bone.value);
+                panel.Add(bone);
+            }
+            foreach (string missing in (settings?.Keys ?? new List<string>()).Where(key => !available.ContainsKey(key)).ToArray())
+            {
+                var pending = new Toggle("待补绑 · " + missing) { value = true, tooltip = missing };
+                pending.RegisterValueChangedCallback(evt =>
+                {
+                    if (evt.newValue) return;
+                    Undo.RecordObject(this, "移除待补绑的动骨");
+                    settings.Keys.Remove(missing);
+                    RebuildPhysBoneSettings(panel, slot);
+                });
+                panel.Add(pending);
+            }
+        }
+
+        private void RebuildPhysBoneSettings(Foldout panel, PartSlot slot)
+        {
+            var parent = panel.parent;
+            panel.RemoveFromHierarchy();
+            DrawPhysBoneSettings(parent, slot);
+            ((Foldout)parent[parent.childCount - 1]).value = true;
+            WardrobeUiStyle.Apply(parent);
+        }
+
+        private static int SavePhysBoneRules(WardrobeGeneratedMenu marker, Transform avatar, List<PartSlot> parts)
+        {
+            RemoveLegacyPhysBoneRules(marker, withUndo: true);
+            var next = new List<WardrobePhysBoneLink>();
+            var rigs = parts.Any(HasPhysBoneKeys) ? AvailableFermataRigs(avatar) : Array.Empty<Component>();
+            int pending = 0;
+            foreach (var slot in parts.Where(HasPhysBoneKeys))
+            {
+                var link = new WardrobePhysBoneLink { Key = slot.Key, Settings = CopyPhysBoneSettings(slot.PhysBones) };
+                next.Add(link);
+                var rig = ResolveFermataRig(avatar, rigs, link.Settings);
+                var available = FermataBoneKeys(rig);
+                pending += slot.Targets.Any(target => target != null)
+                    ? link.Settings.Keys.Count(key => !available.ContainsKey(key))
+                    : link.Settings.Keys.Count;
+            }
+            Undo.RecordObject(marker, "保存分件动骨联动");
+            marker.PhysBoneLinks = next;
+            EditorUtility.SetDirty(marker);
+            return pending;
+        }
+
+        private static void RemoveLegacyPhysBoneRules(WardrobeGeneratedMenu marker, bool withUndo)
+        {
+            if (FermataToggleType == null || marker.ClothingRoot == null || marker.PhysBoneLinks == null) return;
+            foreach (var link in marker.PhysBoneLinks.Where(link => link?.GeneratedRules != null))
+                foreach (var rule in link.GeneratedRules)
+                {
+                    if (rule == null || rule.GetType() != FermataToggleType ||
+                        rule.gameObject == marker.ClothingRoot ||
+                        !rule.transform.IsChildOf(marker.ClothingRoot.transform)) continue;
+                    var node = rule.gameObject;
+                    UnityEngine.Object ownedObject = node.transform.childCount == 0 && node.GetComponents<Component>().Length == 2
+                        ? (UnityEngine.Object)node : rule;
+                    if (withUndo) Undo.DestroyObjectImmediate(ownedObject);
+                    else UnityEngine.Object.DestroyImmediate(ownedObject);
+                }
+        }
+
+        internal static void PreparePhysBoneRulesForBuild(GameObject avatar, List<GameObject> temporaryNodes)
+        {
+            if (FermataToggleType == null) return;
+            var rigs = AvailableFermataRigs(avatar.transform);
+            foreach (var marker in avatar.GetComponentsInChildren<WardrobeGeneratedMenu>(true))
+            {
+                if (marker.ClothingRoot == null || !marker.ClothingRoot.transform.IsChildOf(avatar.transform) ||
+                    marker.PhysBoneLinks == null || marker.PhysBoneLinks.Count == 0) continue;
+                RemoveLegacyPhysBoneRules(marker, withUndo: false);
+                foreach (var link in marker.PhysBoneLinks)
+                {
+                    if (link?.Settings?.Keys == null || link.Settings.Keys.Count == 0) continue;
+                    var rig = ResolveFermataRig(avatar.transform, rigs, link.Settings);
+                    if (rig == null) continue;
+                    var available = FermataBoneKeys(rig);
+                    var keys = link.Settings.Keys.Where(key => !string.IsNullOrEmpty(key) && available.ContainsKey(key)).Distinct().ToArray();
+                    if (keys.Length == 0) continue;
+                    var binding = marker.Slots?.FirstOrDefault(slot => slot != null && slot.Key == link.Key);
+                    var toggle = binding?.MenuNode == null ? null : binding.MenuNode.GetComponent<ModularAvatarObjectToggle>();
+                    if (toggle == null || !toggle.enabled || toggle.Inverted || toggle.Objects == null) continue;
+                    var clothing = marker.ClothingRoot.transform;
+                    var targets = toggle.Objects.Where(entry => !entry.Active)
+                        .Select(entry => entry.Object?.Get(toggle)).Where(target => target != null &&
+                            target.transform != clothing && target.transform.IsChildOf(clothing)).Distinct();
+                    foreach (var target in targets)
+                    {
+                        var child = new GameObject(GameObjectUtility.GetUniqueNameForSibling(
+                            target.transform, "__Zincat_PuniRig_" + link.Key));
+                        child.transform.SetParent(target.transform, false);
+                        temporaryNodes.Add(child);
+                        var rule = child.AddComponent(FermataToggleType);
+                        var serialized = new SerializedObject(rule);
+                        var rigProperty = serialized.FindProperty("rig");
+                        var keysProperty = serialized.FindProperty("patchPhysBoneKeys");
+                        if (rigProperty == null || keysProperty == null || !keysProperty.isArray)
+                            throw new InvalidOperationException("当前 Fermata 版本的动骨联动组件格式无法识别。");
+                        rigProperty.objectReferenceValue = rig;
+                        keysProperty.arraySize = keys.Length;
+                        for (int index = 0; index < keys.Length; index++)
+                            keysProperty.GetArrayElementAtIndex(index).stringValue = keys[index];
+                        serialized.ApplyModifiedPropertiesWithoutUndo();
+                    }
+                }
+            }
+        }
         private static bool HasOrderablePart(PartSlot slot) => string.IsNullOrEmpty(slot.ExternalReadOnlyReason) &&
             (slot.Targets.Any(target => target != null) || slot.UseBlendshapes || slot.UseMaterials);
 
-        private void SaveDraggedPartOrder(List<PartSlot> reordered)
+        private void SaveDraggedPartOrder(List<string> reordered)
         {
-            var visible = new HashSet<string>(reordered.Select(slot => slot.Key));
-            var keys = new Queue<string>(reordered.Select(slot => slot.Key));
-            var updated = OrderedParts(slots, partOrder)
-                .Select(slot => visible.Contains(slot.Key) ? keys.Dequeue() : slot.Key).ToList();
+            var visible = new HashSet<string>(reordered);
+            var keys = new Queue<string>(reordered);
+            var updated = OrderedMenuKeys(slots, partOrder)
+                .Select(key => visible.Contains(key) ? keys.Dequeue() : key).ToList();
             Undo.RecordObject(this, "调整分件顺序");
             partOrder = updated;
         }
@@ -1497,7 +1750,10 @@ namespace Zincat.Clothing.Editor
                 value = slot.AdvancedExpanded
             };
             advanced.style.marginTop = 16;
-            advanced.RegisterValueChangedCallback(evt => slot.AdvancedExpanded = evt.newValue);
+            advanced.RegisterValueChangedCallback(evt =>
+            {
+                if (evt.target == advanced) slot.AdvancedExpanded = evt.newValue;
+            });
             details.Add(advanced);
 
             var shapeToggle = new Toggle("调整形态键") { value = slot.UseBlendshapes };
@@ -1522,6 +1778,7 @@ namespace Zincat.Clothing.Editor
             });
             advanced.Add(materialToggle);
             if (slot.UseMaterials) DrawMaterials(advanced, slot);
+            DrawPhysBoneSettings(advanced, slot);
             WardrobeUiStyle.Apply(details);
         }
 
@@ -2061,9 +2318,10 @@ namespace Zincat.Clothing.Editor
                 Version = 1, MenuName = clothingMenuName, ReserveSwitch = reserveOutfitSwitch,
                 BatchControl = enableBatchControl, Presets = ClonePresets(partPresets),
                 PartOrder = partOrder,
-                Parts = OrderedParts(slots, partOrder).Where(IsUsed).Select(slot => new PortablePart
+                Parts = OrderedParts(slots, partOrder).Where(slot => IsUsed(slot) || HasPhysBoneKeys(slot)).Select(slot => new PortablePart
                 {
                     Key = slot.Key, Name = slot.MenuName,
+                    PhysBones = slot.PhysBones,
                     Targets = slot.Targets.Select(obj => obj == null ? "" :
                         AnimationUtility.CalculateTransformPath(obj.transform, clothingRoot.transform))
                         .Concat(slot.MissingTargets).ToList(),
@@ -2123,9 +2381,10 @@ namespace Zincat.Clothing.Editor
                     !string.IsNullOrEmpty(loadedMenuRoot?.GetComponent<WardrobeGeneratedMenu>()?.OutfitSwitchGroupParameter);
                 enableBatchControl = config.BatchControl;
                 partPresets = ClonePresets(config.Presets);
-                selectedIndex = slots.FindIndex(slot => slot.MissingTargets.Count > 0 || CountUnresolvedRules(slot) > 0);
+                selectedIndex = slots.FindIndex(slot => slot.MissingTargets.Count > 0 || CountUnresolvedRules(slot) > 0 ||
+                    HasPhysBoneKeys(slot));
                 selectedTargets.Clear();
-                showBackups = slots.Skip(MainCount).Any(IsUsed);
+                showBackups = slots.Skip(MainCount).Any(slot => IsUsed(slot) || HasPhysBoneKeys(slot));
                 BuildUI();
                 int found = slots.Sum(slot => slot.Targets.Count);
                 int missing = slots.Sum(slot => slot.MissingTargets.Count);
@@ -2155,6 +2414,9 @@ namespace Zincat.Clothing.Editor
                 text.AppendLine();
                 Row("分件", part.Key, part.Name, Flag(part.UseShapes), Flag(part.InvertShapes),
                     Flag(part.UseMaterials), Flag(part.InvertMaterials));
+                if (part.PhysBones?.Keys?.Count > 0)
+                    Row(new[] { "PuniRig", Flag(part.PhysBones.HasRig), part.PhysBones.RigPath, part.PhysBones.PatchGuid }
+                        .Concat(part.PhysBones.Keys).ToArray());
                 foreach (var target in part.Targets) Row("物体", target);
                 foreach (var shape in part.Shapes)
                     Row("形态键", Scope(shape.Target), shape.Target?.Path, shape.Name,
@@ -2240,6 +2502,13 @@ namespace Zincat.Clothing.Editor
                         case "物体" when part != null && cells.Length == 2:
                             part.Targets.Add(cells[1]);
                             break;
+                        case "PuniRig" when part != null && part.PhysBones == null && cells.Length >= 5:
+                            part.PhysBones = new WardrobePhysBoneSettings
+                            {
+                                HasRig = Flag(cells[1]), RigPath = cells[2], PatchGuid = cells[3],
+                                Keys = cells.Skip(4).Where(key => !string.IsNullOrEmpty(key)).Distinct().ToList()
+                            };
+                            break;
                         case "形态键" when part != null && cells.Length == 5:
                             if (!float.TryParse(cells[4], NumberStyles.Float, CultureInfo.InvariantCulture, out float value) ||
                                 float.IsNaN(value) || float.IsInfinity(value)) throw InvalidLine();
@@ -2307,10 +2576,11 @@ namespace Zincat.Clothing.Editor
                     else if (!slot.Targets.Contains(target.gameObject)) slot.Targets.Add(target.gameObject);
                 }
                 slot.UseBlendshapes = part.UseShapes;
+                slot.PhysBones = CopyPhysBoneSettings(part.PhysBones);
                 slot.BlendshapesInverted = part.InvertShapes;
                 slot.UseMaterials = part.UseMaterials;
                 slot.MaterialsInverted = part.InvertMaterials;
-                slot.AdvancedExpanded = part.UseShapes || part.UseMaterials;
+                slot.AdvancedExpanded = part.UseShapes || part.UseMaterials || HasPhysBoneKeys(slot);
                 foreach (var shape in part.Shapes)
                     slot.Blendshapes.Add(new BlendshapeRule
                     {
@@ -2395,6 +2665,7 @@ namespace Zincat.Clothing.Editor
             public List<string> Targets;
             public List<PortableShape> Shapes;
             public List<PortableMaterial> Materials;
+            public WardrobePhysBoneSettings PhysBones;
         }
         [Serializable] private sealed class PortableObject
         {
@@ -2539,7 +2810,7 @@ namespace Zincat.Clothing.Editor
                     partPresets[i].Name = ReadMenuName(batchMarker.BatchControlNode.transform.GetChild(i + 2).gameObject);
             selectedIndex = -1;
             selectedTargets.Clear();
-            showBackups = slots.Skip(MainCount).Any(IsUsed);
+            showBackups = slots.Skip(MainCount).Any(slot => IsUsed(slot) || HasPhysBoneKeys(slot));
             loadedConfigurationSignature = PreviewSignature();
             loadedNamingSignature = MenuNamingSignature();
             CaptureSceneBaseline();
@@ -2652,12 +2923,12 @@ namespace Zincat.Clothing.Editor
             if (marker != null && marker.BatchControlNode != null)
             {
                 var batch = marker.BatchControlNode;
-                if (children.Count == 0 || children[0] != batch || !ValidateBatchNode(marker))
+                if (!children.Contains(batch) || !ValidateBatchNode(marker))
                 {
                     reason = "批量控制结构已被手动修改，未覆盖。";
                     return false;
                 }
-                children.RemoveAt(0);
+                children.Remove(batch);
             }
             if (marker != null && (marker.Slots == null || marker.Slots.Count != children.Count))
             {
@@ -2684,6 +2955,14 @@ namespace Zincat.Clothing.Editor
                 restored[index] = slot;
                 skipped[slot.Key] = slot.ExternalReadOnlyReason;
             }
+            if (marker?.PhysBoneLinks != null)
+                foreach (var link in marker.PhysBoneLinks.Where(link => link != null))
+                {
+                    var slot = restored.FirstOrDefault(part => part.Key == link.Key);
+                    if (slot == null) continue;
+                    slot.PhysBones = CopyPhysBoneSettings(link.Settings);
+                    if (HasPhysBoneKeys(slot)) slot.AdvancedExpanded = true;
+                }
             return true;
         }
 
@@ -3104,6 +3383,7 @@ namespace Zincat.Clothing.Editor
                     text.Append(rule.Renderer == null ? 0 : rule.Renderer.GetInstanceID())
                         .Append(',').Append(rule.MaterialIndex).Append(',')
                         .Append(rule.Replacement == null ? 0 : rule.Replacement.GetInstanceID()).Append(';');
+                if (HasPhysBoneKeys(slot)) text.Append(":PuniRig:").Append(JsonUtility.ToJson(slot.PhysBones));
                 text.Append('|');
             }
             return text.ToString();
@@ -3511,6 +3791,14 @@ namespace Zincat.Clothing.Editor
                     }
                 }
 
+                if (marker.BatchControlNode != null)
+                {
+                    var usedKeys = new HashSet<string>(used.Select(slot => slot.Key));
+                    int partsBeforeBatch = OrderedMenuKeys(updatedSlots, partOrder)
+                        .TakeWhile(key => key != BatchMenuOrderKey).Count(usedKeys.Contains);
+                    int switchOffset = marker.OutfitSwitchNode == null ? 0 : 1;
+                    marker.BatchControlNode.transform.SetSiblingIndex(switchOffset + partsBeforeBatch);
+                }
                 EditorUtility.SetDirty(marker);
                 if (existingMenu != null)
                 {
@@ -3548,6 +3836,7 @@ namespace Zincat.Clothing.Editor
                     root.name = clothingMenuName;
                 }
 
+                int pendingPhysBones = SavePhysBoneRules(marker, avatar.transform, updatedSlots);
                 EditorSceneManager.MarkSceneDirty(avatar.gameObject.scene);
                 if (skippedMissing > 0)
                 {
@@ -3575,7 +3864,8 @@ namespace Zincat.Clothing.Editor
                 if (!previewConfirmed && !suppressSuccess)
                     Notify("完成", "已生成 " + used.Count + " 个 MA 分件菜单项，跳过 " +
                         (TotalCount - used.Count) + " 个空位。" +
-                        (skippedMissing > 0 ? "已清理 " + skippedMissing + " 个未补绑的物体引用。" : ""), "确定");
+                        (skippedMissing > 0 ? "已清理 " + skippedMissing + " 个未补绑的物体引用。" : "") +
+                        (pendingPhysBones > 0 ? "有 " + pendingPhysBones + " 条动骨联动待补绑，配置已保留。" : ""), "确定");
                 return true;
             }
             catch (Exception error)
@@ -3900,6 +4190,7 @@ namespace Zincat.Clothing.Editor
             public string ExternalReadOnlyReason;
             public List<BlendshapeRule> Blendshapes = new List<BlendshapeRule>();
             public List<MaterialRule> Materials = new List<MaterialRule>();
+            public WardrobePhysBoneSettings PhysBones;
         }
 
         [Serializable]

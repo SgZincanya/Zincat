@@ -13,10 +13,12 @@ namespace Zincat.Lighting.Editor
     {
         private string operationError;
         private bool showAdvanced;
+        private bool showExtra;
         private bool showTest;
         private double materialScanTime = double.NegativeInfinity;
         private int lilCount, poiCount, pendingCount, skippedPoiCount;
         private string pendingReason;
+        private string extraIssue;
 
         private void OnEnable()
         {
@@ -41,6 +43,15 @@ namespace Zincat.Lighting.Editor
             DrawControl("minimum", "最低亮度");
             DrawControl("maximum", "最高亮度");
             DrawControl("monochrome", "环境光颜色影响");
+            showExtra = EditorGUILayout.Foldout(showExtra, "额外设置", true);
+            if (showExtra)
+            {
+                DrawControl("emission", "自发光强度");
+                DrawControl("temperature", "色温");
+                DrawControl("saturation", "彩度");
+                Property("extrasEnabledByDefault", "额外设置总开关默认开启");
+                EditorGUILayout.HelpBox("自发光 1 保留原强度；色温 0.5 保留原色；彩度 1 保留原彩度。色温范围 0～1，彩度范围 0～2。", MessageType.Info);
+            }
             Property("installMenuAutomatically", "自动安装菜单", "关闭后可以通过自己的 MA 菜单引用此预制体。");
             showAdvanced = EditorGUILayout.Foldout(showAdvanced, "高级设置", true);
             if (showAdvanced)
@@ -88,11 +99,13 @@ namespace Zincat.Lighting.Editor
                 EditorGUILayout.HelpBox($"工程缺少 Poiyomi 原始 Shader，已自动跳过 {skippedPoiCount} 个需重新准备的锁定材质。{detail}", MessageType.Info);
             }
             if (valid && lilCount + poiCount + skippedPoiCount == 0) EditorGUILayout.HelpBox("未找到可控制的 lilToon 或 Poiyomi 材质。请检查 Renderer 和排除列表。", MessageType.Warning);
+            if (valid && !string.IsNullOrEmpty(extraIssue)) EditorGUILayout.HelpBox(extraIssue, MessageType.Info);
             if (showAdvanced)
             {
                 EditorGUILayout.LabelField($"材质：lilToon {lilCount}，Poiyomi {poiCount}");
-                int channels = new[] { settings.minimum, settings.maximum, settings.monochrome }.Count(c => c != null && c.enabled);
-                EditorGUILayout.LabelField(settings.networkSynced ? $"同步参数：{channels * 8} bit" : "参数仅本地使用");
+                int channels = new[] { settings.minimum, settings.maximum, settings.monochrome, settings.emission, settings.temperature, settings.saturation }.Count(c => c != null && c.enabled);
+                int bits = channels * 8 + (LightingSetup.HasExtraControls(settings) ? 1 : 0);
+                EditorGUILayout.LabelField(settings.networkSynced ? $"同步参数：{bits} bit" : "参数仅本地使用");
             }
             showTest = EditorGUILayout.Foldout(showTest, "测试", true);
             if (showTest)
@@ -117,6 +130,7 @@ namespace Zincat.Lighting.Editor
             materialScanTime = EditorApplication.timeSinceStartup;
             lilCount = poiCount = pendingCount = skippedPoiCount = 0;
             pendingReason = null;
+            extraIssue = null;
             var materials = LightingSetup.Materials(settings).ToArray();
             var skipped = valid ? LightingSetup.GetSkippedPoiyomiMaterials(materials, settings) : null;
             skippedPoiCount = skipped?.Count ?? 0;
@@ -139,6 +153,18 @@ namespace Zincat.Lighting.Editor
                         }
                         break;
                 }
+            }
+            if (valid && LightingSetup.HasExtraControls(settings))
+            {
+                var renderers = settings.GetComponentInParent<VRCAvatarDescriptor>().GetComponentsInChildren<Renderer>(true)
+                    .Where(r => settings.excludedRenderers == null || !settings.excludedRenderers.Contains(r));
+                foreach (var renderer in renderers)
+                    foreach (var channel in new[] { LightChannel.Emission, LightChannel.Temperature, LightChannel.Saturation })
+                        if (LightingSetup.ExtraControl(settings, channel).enabled)
+                        {
+                            LightingExtraControls.Collect(renderer, channel, skipped, out string issue);
+                            if (extraIssue == null) extraIssue = issue;
+                        }
             }
         }
 

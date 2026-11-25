@@ -29,6 +29,10 @@ namespace Zincat.Lighting
         public PrefabLightControl minimum = new PrefabLightControl { lower = 0, upper = 1, initial = 0 };
         public PrefabLightControl maximum = new PrefabLightControl { lower = 0, upper = 2, initial = 1 };
         public PrefabLightControl monochrome = new PrefabLightControl { lower = 0, upper = 1, initial = 1 };
+        public PrefabLightControl emission = new PrefabLightControl { enabled = false, lower = 0, upper = 1, initial = 1 };
+        public PrefabLightControl temperature = new PrefabLightControl { enabled = false, lower = 0, upper = 1, initial = 0.5f };
+        public PrefabLightControl saturation = new PrefabLightControl { enabled = false, lower = 0, upper = 2, initial = 1 };
+        public bool extrasEnabledByDefault = true;
         public List<Renderer> excludedRenderers = new List<Renderer>();
         public bool installMenuAutomatically = true;
         [HideInInspector] public GameObject menuRoot;
@@ -36,5 +40,10 @@ namespace Zincat.Lighting
         [HideInInspector] public GameObject minimumMenu;
         [HideInInspector] public GameObject maximumMenu;
         [HideInInspector] public GameObject environmentMenu;
+        [HideInInspector] public GameObject extraMenu;
+        [HideInInspector] public GameObject extraToggleMenu;
+        [HideInInspector] public GameObject emissionMenu;
+        [HideInInspector] public GameObject temperatureMenu;
+        [HideInInspector] public GameObject saturationMenu;
     }
 }

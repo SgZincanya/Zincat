@@ -25,6 +25,24 @@ namespace Zincat.Clothing
         public string PartParameterPrefix;
         public GameObject BatchControlNode;
         public List<WardrobePartPreset> PartPresets = new List<WardrobePartPreset>();
+        public List<WardrobePhysBoneLink> PhysBoneLinks = new List<WardrobePhysBoneLink>();
+    }
+
+    [Serializable]
+    public sealed class WardrobePhysBoneSettings
+    {
+        public bool HasRig;
+        public string RigPath;
+        public string PatchGuid;
+        public List<string> Keys = new List<string>();
+    }
+
+    [Serializable]
+    public sealed class WardrobePhysBoneLink
+    {
+        public string Key;
+        public WardrobePhysBoneSettings Settings;
+        public List<Component> GeneratedRules = new List<Component>();
     }
 
     [Serializable]

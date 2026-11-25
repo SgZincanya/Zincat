@@ -11,6 +11,10 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using VRC.Core;
 using VRC.SDK3.Avatars.Components;
+#if ZINCAT_VRCSDK_HAS_ACTIVE_BUILD_TYPE
+using VRC.SDK3A.Editor;
+using VRC.SDKBase.Editor;
+#endif
 using Object = UnityEngine.Object;
 
 namespace Zincat.AvatarSplitTest
@@ -27,6 +31,11 @@ namespace Zincat.AvatarSplitTest
         static readonly Dictionary<string, double> MissingTypes = new Dictionary<string, double>();
         static Func<bool> isBusy;
         static bool hooked;
+#if ZINCAT_VRCSDK_HAS_ACTIVE_BUILD_TYPE
+        static IVRCSdkAvatarBuilderApi activeBuilder;
+        static object activeSetting;
+        static bool ownsBuildType;
+#endif
         static CauBridge() { EditorApplication.delayCall += Attach; }
         public static Type Type(string name)
         {
@@ -74,18 +83,88 @@ namespace Zincat.AvatarSplitTest
         {
             if (hooked || !Available) return;
             var orchestrator = Type("UploadOrchestrator");
-            var ev = orchestrator?.GetEvent("OnUploadSingleAvatarFinished", Fields);
-            if (ev == null) return;
+            hooked = AttachEvent(orchestrator, "OnUploadSingleAvatarFinished", nameof(OnFinished));
+#if ZINCAT_VRCSDK_HAS_ACTIVE_BUILD_TYPE
+            if (hooked && AttachEvent(orchestrator, "OnUploadFinished", nameof(OnQueueFinished)) &&
+                AttachEvent(orchestrator, "OnUploadSingleAvatarStarted", nameof(OnStarted)))
+            {
+                AssemblyReloadEvents.beforeAssemblyReload += ClearBuildScope;
+                EditorApplication.quitting += ClearBuildScope;
+            }
+#endif
+        }
+        static bool AttachEvent(Type orchestrator, string eventName, string handlerName)
+        {
+            var ev = orchestrator?.GetEvent(eventName, Fields);
+            if (ev == null) return false;
             var arguments = ev.EventHandlerType.GetMethod("Invoke").GetParameters()
                 .Select(p => Expression.Parameter(p.ParameterType, p.Name)).ToArray();
-            if (arguments.Length != 2) return;
-            var call = Expression.Call(typeof(CauBridge).GetMethod(nameof(OnFinished), Fields),
+            if (arguments.Length != 2) return false;
+            var call = Expression.Call(typeof(CauBridge).GetMethod(handlerName, Fields),
                 Expression.Convert(arguments[0], typeof(object)), Expression.Convert(arguments[1], typeof(object)));
             var handler = Expression.Lambda(ev.EventHandlerType, call, arguments).Compile();
-            ev.AddEventHandler(null, handler); Hooks.Add(handler); hooked = true;
+            ev.AddEventHandler(null, handler);
+            Hooks.Add(handler);
+            return true;
         }
+#if ZINCAT_VRCSDK_HAS_ACTIVE_BUILD_TYPE
+        static void OnStarted(object progress, object setting)
+        {
+            ClearBuildScope();
+            if (!VRCSdkControlPanel.TryGetBuilder<IVRCSdkAvatarBuilderApi>(out var builder)) return;
+            activeSetting = setting;
+            activeBuilder = builder;
+            builder.OnSdkBuildStart += OnBuildStarted;
+            builder.OnSdkBuildFinish += OnBuildEnded;
+            builder.OnSdkBuildError += OnBuildEnded;
+        }
+
+        static void OnBuildStarted(object sender, object target)
+        {
+            if (!(target is GameObject avatar) || !avatar || EditorApplication.isPlayingOrWillChangePlaymode ||
+                VRC_SdkBuilder.ActiveBuildType != VRC_SdkBuilder.BuildType.None ||
+                !MatchesUploadTarget(avatar)) return;
+
+            // CAU calls Build separately from upload. Give VRCFury and Thry
+            // the same publish state as an SDK Build & Publish.
+            VRC_SdkBuilder.ActiveBuildType = VRC_SdkBuilder.BuildType.Publish;
+            ownsBuildType = true;
+            Debug.Log("[Zincat CAU] 已为批量构建启用发布阶段的材质处理。", avatar);
+        }
+
+        static bool MatchesUploadTarget(GameObject avatar)
+        {
+            var reference = activeSetting == null ? null : Get(activeSetting, "avatarDescriptor");
+            var descriptor = reference?.GetType().GetMethod("TryResolve", Fields)?.Invoke(reference, null) as VRCAvatarDescriptor;
+            if (!descriptor) return false;
+            if (!EditorUtility.IsPersistent(descriptor)) return descriptor.gameObject == avatar;
+
+            // CAU instantiates prefab uploads in its own temporary scene.
+            return avatar.scene.path == "Assets/com.anatawa12.continuous-avatar-uploader-uploading-prefab.unity" &&
+                   avatar.name == descriptor.gameObject.name;
+        }
+
+        static void OnBuildEnded(object sender, string message) => ClearBuildScope();
+        static void OnQueueFinished(object progress, object success) => ClearBuildScope();
+
+        static void ClearBuildScope()
+        {
+            if (ownsBuildType && VRC_SdkBuilder.ActiveBuildType == VRC_SdkBuilder.BuildType.Publish)
+                VRC_SdkBuilder.ActiveBuildType = VRC_SdkBuilder.BuildType.None;
+            ownsBuildType = false;
+            activeSetting = null;
+            if (activeBuilder == null) return;
+            activeBuilder.OnSdkBuildStart -= OnBuildStarted;
+            activeBuilder.OnSdkBuildFinish -= OnBuildEnded;
+            activeBuilder.OnSdkBuildError -= OnBuildEnded;
+            activeBuilder = null;
+        }
+#endif
         static void OnFinished(object progress, object setting)
         {
+#if ZINCAT_VRCSDK_HAS_ACTIVE_BUILD_TYPE
+            if (ReferenceEquals(setting, activeSetting)) ClearBuildScope();
+#endif
             // CAU 0.3.12 raises Finished even after a failed item when continuing.
             // Inspect its error list before recording success.
             bool failed = false;
@@ -148,7 +227,6 @@ namespace Zincat.AvatarSplitTest
         public static void PrepareQueue(AvatarSplitPlan plan)
         {
             CauBatchQueue.Add(plan);
-            CauBatchQueue.Send(CauBatchQueue.Capture(plan));
             CauBatchQueueWindow.Open();
         }
         internal static bool PrepareQueueCore(CauQueueItem[] entries)
@@ -164,7 +242,6 @@ namespace Zincat.AvatarSplitTest
                 throw new InvalidOperationException("请在 CAU 关闭“默认在运行模式拍摄封面”后再交接；本扩展不会进入运行模式。");
             var plans = entries.Select(e => e.Plan()).ToArray();
             var avatars = new List<GameObject>();
-            var covers = groups.Select((g, i) => SplitPhoto.UploadCover(plans[i], g)).ToArray();
             foreach (var group in groups)
             {
                 var avatar = SplitIds.Avatar(group);
@@ -172,16 +249,16 @@ namespace Zincat.AvatarSplitTest
                 if (avatar.name != group.name.Trim()) throw new InvalidOperationException("模型名称与分组不一致，请重新生成或恢复名称。");
                 var id = avatar.GetComponent<PipelineManager>()?.blueprintId ?? "";
                 if (id != (group.blueprintId ?? "")) throw new InvalidOperationException("蓝图号与分组记录不一致，请检查。");
-                if (avatar.scene.isDirty && !EditorSceneManager.SaveScene(avatar.scene)) throw new InvalidOperationException("当前场景保存失败。");
                 avatars.Add(avatar);
             }
             if (groups.Where(g => !string.IsNullOrEmpty(g.blueprintId)).GroupBy(g => g.blueprintId).Any(g => g.Count() > 1))
                 throw new InvalidOperationException("分组蓝图号重复，已停止。");
             if (!EditorUtility.DisplayDialog("准备交给 CAU", "仅将勾选的分组按以下顺序加入 CAU（Windows）：\n\n" +
-                string.Join("\n", groups.Select((g, i) => (i + 1) + ". " + g.UploadName + " · " + (string.IsNullOrEmpty(g.blueprintId) ? "新建私有 Avatar" : "更新已有 Avatar") + (covers[Array.IndexOf(groups, g)] ? " · 已确认封面" : " · 保留原封面"))) +
+                string.Join("\n", groups.Select((g, i) => (i + 1) + ". " + g.UploadName + " · " + (string.IsNullOrEmpty(g.blueprintId) ? "新建私有 Avatar" : "更新已有 Avatar"))) +
                 "\n\n这一步只打开上传队列。请检查 CAU，然后亲自点击“开始上传”。", "打开 CAU 队列", "取消")) return false;
             AvatarSplitBuilder.EnsureFolder(AvatarSplitBuilder.Root + "/UploadSettings");
             var settingType = Type("AvatarUploadSetting");
+            var changedPlans = new HashSet<AvatarSplitPlan>();
             var settings = Array.CreateInstance(Type("AvatarUploadSettingOrGroup"), avatars.Count);
             for (int i = 0; i < avatars.Count; i++)
             {
@@ -192,6 +269,7 @@ namespace Zincat.AvatarSplitTest
                     setting = ScriptableObject.CreateInstance(settingType);
                     var path = AssetDatabase.GenerateUniqueAssetPath(AvatarSplitBuilder.Root + "/UploadSettings/CAU_" + SplitConfigStore.Key(plan) + "_" + g.id + ".asset");
                     AssetDatabase.CreateAsset(setting, path); g.cauSettingGuid = AssetDatabase.AssetPathToGUID(path);
+                    changedPlans.Add(plan);
                 }
                 setting.name = g.name;
                 Set(setting, "avatarName", g.name);
@@ -204,18 +282,42 @@ namespace Zincat.AvatarSplitTest
                     Set(info, "versioningEnabled", false); Set(info, "gitEnabled", false);
                 }
                 EditorUtility.SetDirty(setting); settings.SetValue(setting, i);
-                CauExtraUploads.Prepare(plan, g, setting, covers[Array.IndexOf(groups, g)]);
+                CauExtraUploads.Prepare(plan, g, setting, null);
+                AssetDatabase.SaveAssetIfDirty(setting);
             }
+            foreach (var plan in changedPlans) SplitIds.Save(plan);
+            foreach (var scene in avatars.Select(avatar => avatar.scene).Distinct())
+                if (scene.isDirty && !EditorSceneManager.SaveScene(scene))
+                    throw new InvalidOperationException("当前场景保存失败。");
             var window = Type("ContinuousAvatarUploader").GetMethod("OpenWindow", Fields).Invoke(null, null) as EditorWindow;
-            Set(window, "settingsOrGroups", settings);
-            ((IList)Get(window, "temporarySettings")).Clear();
+            ReplaceWindowQueue(window, settings);
             var targetType = Type("TargetPlatform");
             var setPlatform = Type("Preferences").GetMethod("SetUploadFor", Fields);
             foreach (string platform in new[] { "Windows", "Android", "iOS" })
                 setPlatform.Invoke(null, new[] { Enum.Parse(targetType, platform), (object)(platform == "Windows") });
             // The final upload action remains in CAU. Never call StartUpload here.
-            window.Show(); window.Repaint(); foreach (var plan in plans.Distinct()) SplitIds.Save(plan); AssetDatabase.SaveAssets();
+            window.Show(); window.Repaint();
             return true;
+        }
+
+        // Update CAU's cached SerializedObject as well as its backing fields.
+        internal static void ReplaceWindowQueue(EditorWindow window, Array settings)
+        {
+            if (Busy) throw new InvalidOperationException("CAU 正在上传，不能替换队列。");
+            var serialized = Get(window, "_serialized") as SerializedObject ?? new SerializedObject(window);
+            serialized.Update();
+            var list = serialized.FindProperty("settingsOrGroups");
+            var temporary = serialized.FindProperty("temporarySettings");
+            if (list == null || temporary == null) throw new InvalidOperationException("CAU 序列化队列接口不匹配，未替换。");
+            list.arraySize = settings.Length;
+            for (int i = 0; i < settings.Length; i++) list.GetArrayElementAtIndex(i).objectReferenceValue = (Object)settings.GetValue(i);
+            temporary.arraySize = 0;
+            serialized.ApplyModifiedPropertiesWithoutUndo(); serialized.Update();
+            EditorUtility.SetDirty(window);
+            if (!(Get(window, "settingsOrGroups") is IEnumerable actual) ||
+                !actual.Cast<Object>().SequenceEqual(settings.Cast<Object>()))
+                throw new InvalidOperationException("CAU 队列核对失败，请重新交接；未开始上传。");
+            window.Repaint();
         }
 
         public static void RetargetExistingSettings(AvatarSplitPlan plan)

@@ -1,5 +1,6 @@
 #if UNITY_EDITOR
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using nadena.dev.modular_avatar.core;
 using nadena.dev.ndmf;
@@ -8,9 +9,34 @@ using UnityEngine;
 using VRC.SDK3.Avatars.Components;
 
 [assembly: ExportsPlugin(typeof(Zincat.Clothing.Editor.WardrobeBatchPlugin))]
+[assembly: ExportsPlugin(typeof(Zincat.Clothing.Editor.WardrobePhysBoneBuildPlugin))]
 
 namespace Zincat.Clothing.Editor
 {
+    public sealed class WardrobePhysBoneBuildPlugin : Plugin<WardrobePhysBoneBuildPlugin>
+    {
+        private sealed class BuildState
+        {
+            internal readonly List<GameObject> TemporaryNodes = new List<GameObject>();
+        }
+
+        public override string QualifiedName => "zincat.clothing.punirig-rules";
+        public override string DisplayName => "衣服菜单 · PuniRig 动骨联动";
+
+        protected override void Configure()
+        {
+            InPhase(BuildPhase.Resolving).BeforePlugin("com.fermata.modular-rig")
+                .Run("准备分件动骨联动", context => WardrobeClassificationWindow.PreparePhysBoneRulesForBuild(
+                    context.AvatarRootObject, context.GetState(_ => new BuildState()).TemporaryNodes));
+
+            InPhase(BuildPhase.Optimizing).Run("清理分件动骨联动临时节点", context =>
+            {
+                foreach (var node in context.GetState(_ => new BuildState()).TemporaryNodes)
+                    if (node != null) UnityEngine.Object.DestroyImmediate(node);
+            });
+        }
+    }
+
     // 只在构建副本上生成控制器，不留下动画文件，不修改原场景。
     public sealed class WardrobeBatchPlugin : Plugin<WardrobeBatchPlugin>
     {

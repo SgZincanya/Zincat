@@ -9,7 +9,7 @@ using UnityEngine.Rendering;
 
 namespace Zincat.Lighting.Editor
 {
-    public enum LightChannel { Minimum, Maximum, Monochrome }
+    public enum LightChannel { Minimum, Maximum, Monochrome, Emission, Temperature, Saturation }
     public enum ShaderFamily { Unsupported, LilToon, Poiyomi }
 
     public static class MaterialSupport
@@ -73,7 +73,10 @@ namespace Zincat.Lighting.Editor
                 {
                     case LightChannel.Minimum: return new[] { "_LightMinLimit" };
                     case LightChannel.Maximum: return new[] { "_LightMaxLimit" };
-                    default: return new[] { "_MonochromeLighting" };
+                    case LightChannel.Monochrome: return new[] { "_MonochromeLighting" };
+                    case LightChannel.Emission: return new[] { "_EmissionBlend", "_Emission2ndBlend" };
+                    case LightChannel.Temperature: return new[] { "_Color.r", "_Color.g", "_Color.b", "_Color.a" };
+                    case LightChannel.Saturation: return new[] { "_MainTexHSVG.x", "_MainTexHSVG.y", "_MainTexHSVG.z", "_MainTexHSVG.w" };
                 }
             }
             if (family == ShaderFamily.Poiyomi)
@@ -82,10 +85,31 @@ namespace Zincat.Lighting.Editor
                 {
                     case LightChannel.Minimum: return new[] { "_LightingMinLightBrightness" };
                     case LightChannel.Maximum: return additive ? new[] { "_LightingCap", "_LightingAdditiveLimit" } : new[] { "_LightingCap" };
-                    default: return additive ? new[] { "_LightingMonochromatic", "_LightingAdditiveMonochromatic" } : new[] { "_LightingMonochromatic" };
+                    case LightChannel.Monochrome: return additive ? new[] { "_LightingMonochromatic", "_LightingAdditiveMonochromatic" } : new[] { "_LightingMonochromatic" };
+                    case LightChannel.Emission: return new[] { "_EmissionStrength", "_EmissionStrength1", "_EmissionStrength2", "_EmissionStrength3" };
+                    case LightChannel.Temperature: return new[] { "_Color.r", "_Color.g", "_Color.b", "_Color.a" };
+                    case LightChannel.Saturation: return new[] { "_Saturation" };
                 }
             }
             return Array.Empty<string>();
+        }
+
+        public static string[] Properties(Material material, LightChannel channel, bool additive)
+        {
+            ShaderFamily family = Identify(material);
+            return Properties(family, channel, additive)
+                .Where(property => material.HasProperty(property.Split('.')[0]) &&
+                    (channel != LightChannel.Emission || EmissionEnabled(material, family, property))).ToArray();
+        }
+
+        private static bool EmissionEnabled(Material material, ShaderFamily family, string property)
+        {
+            string toggle;
+            if (family == ShaderFamily.LilToon)
+                toggle = property == "_EmissionBlend" ? "_UseEmission" : "_UseEmission2nd";
+            else
+                toggle = "_EnableEmission" + property.Substring("_EmissionStrength".Length);
+            return !material.HasProperty(toggle) || material.GetFloat(toggle) > 0;
         }
 
         public static Material PrepareCopy(Material source)
