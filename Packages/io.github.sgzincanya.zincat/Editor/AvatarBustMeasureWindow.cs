@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using nadena.dev.modular_avatar.core;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace Zincat.AvatarMeasurement
 {
@@ -31,6 +34,7 @@ namespace Zincat.AvatarMeasurement
         private int[] triangles;
         private Mesh sourceMesh;
         private Matrix4x4 sampledTransform;
+        private bool sampleDirty;
         private Vector3 anchor;
         private float guideWidth = 0.2f;
         private Section topSection;
@@ -50,6 +54,7 @@ namespace Zincat.AvatarMeasurement
         {
             SceneView.duringSceneGui += DrawScene;
             Undo.undoRedoPerformed += Refresh;
+            Undo.postprocessModifications += OnInspectorModifications;
             EditorApplication.hierarchyChanged += Refresh;
         }
 
@@ -57,6 +62,7 @@ namespace Zincat.AvatarMeasurement
         {
             SceneView.duringSceneGui -= DrawScene;
             Undo.undoRedoPerformed -= Refresh;
+            Undo.postprocessModifications -= OnInspectorModifications;
             EditorApplication.hierarchyChanged -= Refresh;
             if (baked) DestroyImmediate(baked);
         }
@@ -293,8 +299,24 @@ namespace Zincat.AvatarMeasurement
         private void EnsureSample()
         {
             if (!avatar || !body) return;
-            if (sampledTransform != FrameMatrix() || sourceMesh != body.sharedMesh || (vertices == null && error == null))
+            if (sampleDirty || sampledTransform != FrameMatrix() || sourceMesh != body.sharedMesh || (vertices == null && error == null))
                 Refresh();
+        }
+
+        private UndoPropertyModification[] OnInspectorModifications(UndoPropertyModification[] changes)
+        {
+            if (!avatar || !body) return changes;
+            foreach (var change in changes)
+            {
+                var target = change.currentValue?.target;
+                if (target != body && !(target is ModularAvatarScaleAdjuster adjuster &&
+                    adjuster.transform.IsChildOf(avatar))) continue;
+                sampleDirty = true;
+                Repaint();
+                SceneView.RepaintAll();
+                break;
+            }
+            return changes;
         }
 
         private Matrix4x4 FrameMatrix()
@@ -311,6 +333,7 @@ namespace Zincat.AvatarMeasurement
 
         private void Sample()
         {
+            sampleDirty = false;
             error = null;
             vertices = null;
             sourceMesh = null;
@@ -327,9 +350,7 @@ namespace Zincat.AvatarMeasurement
             try
             {
                 baked.Clear();
-                // On Unity 2022.3 useScale=false can retain inherited scale in the vertices.
-                // Use the renderer-local bake with the full renderer-to-measurement matrix.
-                body.BakeMesh(baked, true);
+                BakeBody();
                 vertices = baked.vertices;
                 triangles = baked.triangles;
                 for (int i = 0; i < vertices.Length; i++)
@@ -343,6 +364,75 @@ namespace Zincat.AvatarMeasurement
                 error = "无法读取 Body 网格。";
                 Debug.LogException(exception, body);
             }
+        }
+
+        private void BakeBody()
+        {
+            var bones = body.bones;
+            var adjustments = new Dictionary<Transform, Vector3>();
+            foreach (var bone in bones)
+            {
+                if (bone && bone.IsChildOf(avatar) && bone.TryGetComponent(out ModularAvatarScaleAdjuster adjuster)
+                    && adjuster.Scale != Vector3.one)
+                    adjustments[bone] = adjuster.Scale;
+            }
+
+            // Pair the renderer-local bake with the full renderer-to-measurement matrix.
+            if (adjustments.Count == 0)
+            {
+                body.BakeMesh(baked, true);
+                return;
+            }
+
+            var scene = EditorSceneManager.NewPreviewScene();
+            try
+            {
+                var copies = new Dictionary<Transform, Transform>();
+                // MA gives each adjusted skin joint a scaled child, leaving the original children alone.
+                var scaledBones = new Dictionary<Transform, Transform>();
+                foreach (var pair in adjustments)
+                {
+                    var scaled = CreateSampleTransform(scene, "Adjusted skin joint");
+                    scaled.SetParent(CopySampleTransform(pair.Key, scene, copies), false);
+                    scaled.localScale = pair.Value;
+                    scaledBones.Add(pair.Key, scaled);
+                }
+                for (int i = 0; i < bones.Length; i++)
+                    if (bones[i] && scaledBones.TryGetValue(bones[i], out var scaled)) bones[i] = scaled;
+
+                var renderer = CopySampleTransform(body.transform, scene, copies)
+                    .gameObject.AddComponent<SkinnedMeshRenderer>();
+                renderer.sharedMesh = sourceMesh;
+                renderer.quality = body.quality;
+                renderer.bones = bones;
+                renderer.rootBone = body.rootBone;
+                for (int i = 0; i < sourceMesh.blendShapeCount; i++)
+                    renderer.SetBlendShapeWeight(i, body.GetBlendShapeWeight(i));
+                renderer.BakeMesh(baked, true);
+            }
+            finally
+            {
+                EditorSceneManager.ClosePreviewScene(scene);
+            }
+        }
+
+        private static Transform CopySampleTransform(Transform source, Scene scene, Dictionary<Transform, Transform> copies)
+        {
+            if (copies.TryGetValue(source, out var copy)) return copy;
+            copy = CreateSampleTransform(scene, source.name);
+            if (source.parent) copy.SetParent(CopySampleTransform(source.parent, scene, copies), false);
+            copy.localPosition = source.localPosition;
+            copy.localRotation = source.localRotation;
+            copy.localScale = source.localScale;
+            copies.Add(source, copy);
+            return copy;
+        }
+
+        private static Transform CreateSampleTransform(Scene scene, string name)
+        {
+            var obj = EditorUtility.CreateGameObjectWithHideFlags(name, HideFlags.HideAndDontSave);
+            SceneManager.MoveGameObjectToScene(obj, scene);
+            return obj.transform;
         }
 
         private void Estimate()

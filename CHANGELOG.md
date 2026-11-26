@@ -1,5 +1,10 @@
 # Changes
 
+## 2.13.1
+
+- Account for Modular Avatar Scale Adjuster when baking meshes for bust measurement.
+- Refresh measurement samples after relevant renderer or scale-adjuster inspector changes.
+
 ## 2.13.0
 
 - Add optional emission intensity, color temperature and saturation controls to Lighting.
